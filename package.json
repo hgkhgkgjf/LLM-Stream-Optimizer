@@ -5,9 +5,11 @@
   "description": "A lightweight Cloudflare Workers proxy that optimizes LLM streaming output.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "check": "wrangler deploy --dry-run",
-    "deploy": "wrangler deploy"
+    "dev": "wrangler dev src/worker.js --config wrangler.toml",
+    "test": "node --test",
+    "build": "node scripts/build-worker.mjs",
+    "check": "npm run build && wrangler deploy --dry-run --config wrangler.toml",
+    "deploy": "npm run build && wrangler deploy --config wrangler.toml"
   },
   "keywords": [
     "cloudflare-workers",

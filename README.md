@@ -52,6 +52,14 @@ npm run dev
 
 Open the local Worker URL, then go to `/admin` to configure upstream APIs.
 
+Build the copy-and-paste single-file Worker:
+
+```bash
+npm run build
+```
+
+The source of truth is the modular code in `src/`. The root [`worker.js`](worker.js) file is a generated artifact produced by `npm run build`; do not edit it by hand.
+
 Before deploying, create a KV namespace and fill the `CONFIG_KV` binding in `wrangler.toml`:
 
 ```toml
@@ -59,6 +67,12 @@ Before deploying, create a KV namespace and fill the `CONFIG_KV` binding in `wra
 binding = "CONFIG_KV"
 id = "your-production-kv-namespace-id"
 preview_id = "your-preview-kv-namespace-id"
+```
+
+Validate the generated Worker and Wrangler config with a dry run:
+
+```bash
+npm run check
 ```
 
 Then deploy:
@@ -72,11 +86,12 @@ npm run deploy
 If you prefer the original copy-and-paste deployment flow:
 
 1. Create a new Cloudflare Worker.
-2. Copy all content from [`worker.js`](worker.js) into the Workers editor and deploy it.
-3. In Workers settings, add a secret named `PROXY_API_KEY`. This value is both the proxy API key and the `/admin` login password.
-4. Create a Workers KV namespace.
-5. Add a KV binding named `CONFIG_KV` and point it to the namespace you created.
-6. Open your Worker domain and visit `/admin`.
+2. Run `npm run build`.
+3. Copy all content from the generated [`worker.js`](worker.js) into the Workers editor and deploy it.
+4. In Workers settings, add a secret named `PROXY_API_KEY`. This value is both the proxy API key and the `/admin` login password.
+5. Create a Workers KV namespace.
+6. Add a KV binding named `CONFIG_KV` and point it to the namespace you created.
+7. Open your Worker domain and visit `/admin`.
 
 ## Configuration
 
@@ -123,11 +138,27 @@ See [SECURITY.md](SECURITY.md) for more details.
 
 ```bash
 npm run dev
+npm test
+npm run build
 npm run check
 npm run deploy
 ```
 
-`npm run check` performs a Wrangler dry-run deployment validation.
+- `npm run dev`: runs Wrangler against `src/worker.js` with `wrangler.toml` for local development.
+- `npm run build`: bundles `src/worker.js` into the generated, copy-and-paste root `worker.js` artifact.
+- `npm run check`: runs `npm run build`, then validates the generated `worker.js` with `wrangler deploy --dry-run`.
+- `npm run deploy`: runs `npm run build`, then deploys the generated `worker.js` through `wrangler.toml`.
+
+Always make source edits in `src/`, then rerun `npm run build`. Hand edits to the generated root `worker.js` will be overwritten.
+
+## Source Layout
+
+- `src/worker.js`: Worker entrypoint and top-level route split.
+- `src/proxy.js`: OpenAI-compatible proxy request flow.
+- `src/providers/`: OpenAI, Gemini, and Anthropic request/response adapters.
+- `src/stream.js`: SSE parsing, OpenAI chunk normalization, and smoothing.
+- `src/admin/`: login/session handling and the `/admin` dashboard.
+- `src/config.js`: environment/KV config loading, masked secret handling, and persistence.
 
 ## License
 
