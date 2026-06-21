@@ -1,3 +1,310 @@
+const NEO_BRUTAL_STYLE = `
+  :root {
+    --bg: #fef6e4;
+    --ink: #0a0a0a;
+    --paper: #ffffff;
+    --yellow: #ffd23f;
+    --pink: #ff5c8a;
+    --blue: #4d9de0;
+    --green: #7ae582;
+    --muted: #6b6357;
+    --bw: 3px;
+    --shadow: 6px 6px 0 var(--ink);
+    --shadow-sm: 4px 4px 0 var(--ink);
+    --display: "Arial Black", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+    --body: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--body);
+    color: var(--ink);
+    background-color: var(--bg);
+    background-image: radial-gradient(var(--ink) 1px, transparent 1px);
+    background-size: 22px 22px;
+    background-position: -11px -11px;
+    position: relative;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-color: rgba(254, 246, 228, 0.86);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .display { font-family: var(--display); font-weight: 900; text-transform: uppercase; letter-spacing: -0.01em; }
+
+  /* ===== shared form primitives ===== */
+  label.lbl {
+    display: block;
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    margin: 16px 0 8px;
+  }
+  input.fld, textarea.fld {
+    width: 100%;
+    font: inherit;
+    font-family: var(--mono);
+    background: var(--paper);
+    border: var(--bw) solid var(--ink);
+    padding: 12px;
+    box-shadow: var(--shadow-sm);
+    border-radius: 0;
+    outline: none;
+    color: var(--ink);
+  }
+  input.fld:focus, textarea.fld:focus { background: var(--yellow); box-shadow: 2px 2px 0 var(--ink); transform: translate(2px, 2px); }
+  textarea.fld { min-height: 150px; resize: vertical; }
+
+  .btn {
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 13px;
+    border: var(--bw) solid var(--ink);
+    box-shadow: var(--shadow-sm);
+    padding: 12px 18px;
+    cursor: pointer;
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .btn:hover { background: var(--yellow); }
+  .btn:active { box-shadow: none; transform: translate(4px, 4px); }
+  .btn--primary { background: var(--pink); color: var(--ink); }
+  .btn--primary:hover { background: var(--ink); color: var(--pink); }
+  .btn--secondary { background: var(--paper); }
+  .btn--secondary:hover { background: var(--green); }
+
+  /* ===== login ===== */
+  #login-wrap {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 32px 16px;
+  }
+  .login-card {
+    width: min(440px, 100%);
+    background: var(--paper);
+    border: var(--bw) solid var(--ink);
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+  .login-head {
+    background: var(--ink);
+    color: var(--yellow);
+    padding: 22px 28px;
+    border-bottom: var(--bw) solid var(--ink);
+    position: relative;
+  }
+  .login-head .kicker {
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 11px;
+    color: var(--pink);
+    margin: 0 0 6px;
+  }
+  .login-head h1 {
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    margin: 0;
+    font-size: 26px;
+    line-height: 0.98;
+  }
+  .login-stamp {
+    position: absolute;
+    top: -16px;
+    right: -16px;
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    background: var(--pink);
+    border: var(--bw) solid var(--ink);
+    box-shadow: var(--shadow-sm);
+    display: grid;
+    place-items: center;
+    transform: rotate(12deg);
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    font-size: 12px;
+    text-align: center;
+    line-height: 1;
+    color: var(--ink);
+  }
+  .login-body { padding: 26px 28px 30px; }
+  .login-body p { margin: 0 0 22px; font-size: 14px; color: var(--muted); }
+  .login-actions { display: flex; justify-content: flex-end; margin-top: 22px; }
+  #login-wrap #message {
+    min-height: 22px;
+    margin-top: 14px;
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 12px;
+    color: var(--ink);
+  }
+
+  /* ===== dashboard ===== */
+  #dash-wrap { position: relative; z-index: 1; }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    background: var(--ink);
+    border-bottom: var(--bw) solid var(--ink);
+    padding: 14px 24px;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .nav-brand { display: flex; align-items: center; gap: 12px; color: var(--yellow); }
+  .nav-brand .mark {
+    width: 26px; height: 26px;
+    background: var(--pink);
+    border: var(--bw) solid var(--yellow);
+    box-shadow: 3px 3px 0 var(--yellow);
+  }
+  header h1 {
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    margin: 0;
+    font-size: 20px;
+  }
+  main {
+    width: min(1080px, calc(100vw - 32px));
+    margin: 28px auto 80px;
+    display: grid;
+    gap: 26px;
+  }
+  section {
+    background: var(--paper);
+    border: var(--bw) solid var(--ink);
+    box-shadow: var(--shadow);
+  }
+  section h2 {
+    margin: 0;
+    border-bottom: var(--bw) solid var(--ink);
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    font-size: 15px;
+  }
+  section h2 .num {
+    background: var(--ink);
+    color: var(--paper);
+    padding: 2px 9px;
+    font-size: 13px;
+  }
+  section.is-yellow > h2 { background: var(--yellow); }
+  section.is-blue > h2 { background: var(--blue); }
+  section.is-pink > h2 { background: var(--pink); }
+  section > div.body, section > form > .body { padding: 8px 20px 22px; }
+
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 22px; }
+  .checks {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-top: 16px;
+  }
+  .checks label {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    border: var(--bw) solid var(--ink);
+    box-shadow: var(--shadow-sm);
+    padding: 10px 14px;
+    background: var(--paper);
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .checks input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    border: var(--bw) solid var(--ink);
+    background: var(--paper);
+    position: relative;
+    cursor: pointer;
+  }
+  .checks input:checked { background: var(--green); }
+  .checks input:checked::after {
+    content: "\\2715";
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-family: var(--display);
+    font-weight: 900;
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .checks label:has(input:checked) { background: var(--yellow); }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+  #dash-wrap #message {
+    min-height: 24px;
+    font-family: var(--display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 12px;
+    padding: 8px 12px;
+    background: var(--green);
+    border: var(--bw) solid var(--ink);
+    box-shadow: var(--shadow-sm);
+    display: inline-block;
+  }
+
+  @media (max-width: 760px) {
+    .grid { grid-template-columns: 1fr; }
+    header { padding: 12px 16px; }
+    header h1 { font-size: 16px; }
+    .login-stamp { width: 64px; height: 64px; font-size: 11px; top: -12px; right: -10px; }
+  }
+`;
+
 export function serveLoginPage() {
   return new Response(
     `<!doctype html>
@@ -6,30 +313,29 @@ export function serveLoginPage() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LLM Stream Optimizer - Admin Login</title>
-  <style>
-    :root { color-scheme: light dark; font-family: Inter, system-ui, sans-serif; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f4f6f8; color: #16202a; }
-    main { width: min(420px, calc(100vw - 32px)); background: white; border: 1px solid #d9e0e7; border-radius: 8px; padding: 28px; box-shadow: 0 20px 60px rgba(10, 31, 68, .12); }
-    h1 { margin: 0 0 8px; font-size: 24px; }
-    p { margin: 0 0 20px; color: #52616f; }
-    label { display: block; font-weight: 650; margin-bottom: 8px; }
-    input, button { width: 100%; box-sizing: border-box; font: inherit; border-radius: 6px; }
-    input { border: 1px solid #cbd5df; padding: 12px; }
-    button { margin-top: 14px; border: 0; padding: 12px; background: #1261a6; color: white; cursor: pointer; }
-    #message { min-height: 22px; margin-top: 14px; color: #a83232; }
-  </style>
+  <style>${NEO_BRUTAL_STYLE}</style>
 </head>
 <body>
-  <main>
-    <h1>LLM Stream Optimizer</h1>
-    <p>Admin dashboard</p>
-    <form id="login-form">
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required>
-      <button type="submit">Login</button>
-      <div id="message" role="status"></div>
-    </form>
-  </main>
+  <div id="login-wrap">
+    <div class="login-card">
+      <div class="login-stamp">ADMIN<br>ONLY</div>
+      <div class="login-head">
+        <p class="kicker">// Stream Optimizer</p>
+        <h1>LLM Stream Optimizer</h1>
+      </div>
+      <div class="login-body">
+        <p>Admin dashboard. Authenticate with your proxy key.</p>
+        <form id="login-form">
+          <label class="lbl" for="password">Password</label>
+          <input id="password" name="password" class="fld" type="password" autocomplete="current-password" required>
+          <div class="login-actions">
+            <button type="submit" class="btn btn--primary">Login</button>
+          </div>
+          <div id="message" role="status"></div>
+        </form>
+      </div>
+    </div>
+  </div>
   <script>
     const form = document.getElementById('login-form');
     const message = document.getElementById('message');
@@ -63,91 +369,81 @@ export function serveDashboardPage() {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LLM Stream Optimizer - Admin</title>
-  <style>
-    :root { color-scheme: light dark; font-family: Inter, system-ui, sans-serif; }
-    body { margin: 0; background: #f5f7fa; color: #17212b; }
-    header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: white; border-bottom: 1px solid #d9e0e7; }
-    h1 { margin: 0; font-size: 20px; }
-    main { width: min(1080px, calc(100vw - 32px)); margin: 24px auto 48px; display: grid; gap: 16px; }
-    section { background: white; border: 1px solid #d9e0e7; border-radius: 8px; padding: 18px; }
-    h2 { margin: 0 0 14px; font-size: 17px; }
-    label { display: block; font-weight: 650; margin: 10px 0 6px; }
-    input, textarea, button { font: inherit; border-radius: 6px; box-sizing: border-box; }
-    input, textarea { width: 100%; border: 1px solid #cbd5df; padding: 10px; }
-    textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .checks { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 10px; }
-    .checks label { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
-    .checks input { width: auto; }
-    .actions { display: flex; gap: 10px; justify-content: flex-end; }
-    button { border: 0; padding: 10px 14px; background: #1261a6; color: white; cursor: pointer; }
-    button.secondary { background: #5f6f7d; }
-    #message { min-height: 24px; }
-    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } header { padding: 14px 16px; } }
-  </style>
+  <style>${NEO_BRUTAL_STYLE}</style>
 </head>
 <body>
-  <header>
-    <h1>LLM Stream Optimizer</h1>
-    <button id="logout" class="secondary" type="button">Logout</button>
-  </header>
-  <main>
-    <form id="config-form">
-      <section>
-        <h2>OpenAI-compatible upstreams</h2>
-        <div class="grid">
-          <div>
-            <label for="defaultUpstreamUrl">Default upstream URL</label>
-            <input id="defaultUpstreamUrl" type="url">
-          </div>
-          <div>
-            <label for="defaultOutgoingApiKey">Default outgoing API key</label>
-            <input id="defaultOutgoingApiKey" type="password" autocomplete="off">
-          </div>
-        </div>
-        <label for="openaiEndpoints">OpenAI endpoints JSON</label>
-        <textarea id="openaiEndpoints" spellcheck="false"></textarea>
-      </section>
-      <section>
-        <h2>Provider keys</h2>
-        <div class="grid">
-          <div>
-            <label for="geminiUpstreamUrl">Gemini URL</label>
-            <input id="geminiUpstreamUrl" type="url">
-          </div>
-          <div>
-            <label for="geminiApiKey">Gemini API key</label>
-            <input id="geminiApiKey" type="password" autocomplete="off">
-          </div>
-          <div>
-            <label for="anthropicUpstreamUrl">Anthropic URL</label>
-            <input id="anthropicUpstreamUrl" type="url">
-          </div>
-          <div>
-            <label for="anthropicApiKey">Anthropic API key</label>
-            <input id="anthropicApiKey" type="password" autocomplete="off">
-          </div>
-          <div>
-            <label for="proxyApiKey">Proxy/admin API key</label>
-            <input id="proxyApiKey" type="password" autocomplete="new-password">
-          </div>
-        </div>
-        <div class="checks">
-          <label><input id="geminiUseNativeFetch" type="checkbox"> Gemini native fetch</label>
-          <label><input id="anthropicUseNativeFetch" type="checkbox"> Anthropic native fetch</label>
-        </div>
-      </section>
-      <section>
-        <h2>Stream optimizer</h2>
-        <label for="streamOptimizationModels">Optimized model whitelist</label>
-        <input id="streamOptimizationModels" placeholder="gpt-4o, claude-3-5-sonnet-20241022">
-      </section>
-      <div class="actions">
-        <span id="message" role="status"></span>
-        <button type="submit">Save</button>
+  <div id="dash-wrap">
+    <header>
+      <div class="nav-brand">
+        <span class="mark"></span>
+        <h1>LLM Stream Optimizer</h1>
       </div>
-    </form>
-  </main>
+      <button id="logout" class="btn btn--secondary" type="button">Logout</button>
+    </header>
+    <main>
+      <form id="config-form">
+        <section class="is-yellow">
+          <h2><span class="num">01</span> OpenAI-compatible upstreams</h2>
+          <div class="body">
+            <div class="grid">
+              <div>
+                <label class="lbl" for="defaultUpstreamUrl">Default upstream URL</label>
+                <input id="defaultUpstreamUrl" class="fld" type="url">
+              </div>
+              <div>
+                <label class="lbl" for="defaultOutgoingApiKey">Default outgoing API key</label>
+                <input id="defaultOutgoingApiKey" class="fld" type="password" autocomplete="off">
+              </div>
+            </div>
+            <label class="lbl" for="openaiEndpoints">OpenAI endpoints JSON</label>
+            <textarea id="openaiEndpoints" class="fld" spellcheck="false"></textarea>
+          </div>
+        </section>
+        <section class="is-blue">
+          <h2><span class="num">02</span> Provider keys</h2>
+          <div class="body">
+            <div class="grid">
+              <div>
+                <label class="lbl" for="geminiUpstreamUrl">Gemini URL</label>
+                <input id="geminiUpstreamUrl" class="fld" type="url">
+              </div>
+              <div>
+                <label class="lbl" for="geminiApiKey">Gemini API key</label>
+                <input id="geminiApiKey" class="fld" type="password" autocomplete="off">
+              </div>
+              <div>
+                <label class="lbl" for="anthropicUpstreamUrl">Anthropic URL</label>
+                <input id="anthropicUpstreamUrl" class="fld" type="url">
+              </div>
+              <div>
+                <label class="lbl" for="anthropicApiKey">Anthropic API key</label>
+                <input id="anthropicApiKey" class="fld" type="password" autocomplete="off">
+              </div>
+              <div>
+                <label class="lbl" for="proxyApiKey">Proxy/admin API key</label>
+                <input id="proxyApiKey" class="fld" type="password" autocomplete="new-password">
+              </div>
+            </div>
+            <div class="checks">
+              <label><input id="geminiUseNativeFetch" type="checkbox"> Gemini native fetch</label>
+              <label><input id="anthropicUseNativeFetch" type="checkbox"> Anthropic native fetch</label>
+            </div>
+          </div>
+        </section>
+        <section class="is-pink">
+          <h2><span class="num">03</span> Stream optimizer</h2>
+          <div class="body">
+            <label class="lbl" for="streamOptimizationModels">Optimized model whitelist</label>
+            <input id="streamOptimizationModels" class="fld" placeholder="gpt-4o, claude-3-5-sonnet-20241022">
+          </div>
+        </section>
+        <div class="actions">
+          <span id="message" role="status"></span>
+          <button type="submit" class="btn btn--primary">Save</button>
+        </div>
+      </form>
+    </main>
+  </div>
   <script>
     const ids = [
       'defaultUpstreamUrl','defaultOutgoingApiKey','geminiUpstreamUrl','geminiApiKey',
