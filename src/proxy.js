@@ -41,10 +41,11 @@ function modelNameFromResponse(response, fallback) {
 
 function streamResponse(upstreamResponse, provider, config, requestBody) {
   const modelName = modelNameFromResponse(upstreamResponse, requestBody.model);
-  if (!shouldOptimizeModel(modelName, config.streamOptimizationModels)) {
+  const optimize = shouldOptimizeModel(modelName, config.streamOptimizationModels);
+  if (provider.id === "openai" && !optimize) {
     return addCorsHeaders(upstreamResponse);
   }
-  const transformer = createSSETransformer({ provider, config });
+  const transformer = createSSETransformer({ provider, config, optimize });
   const headers = new Headers(upstreamResponse.headers);
   headers.set("Content-Type", "text/event-stream");
   headers.set("Cache-Control", "no-cache");

@@ -162,10 +162,9 @@ test("dashboard page fetches config without unsafe HTML injection sinks", async 
   assert.equal(html.includes("document.write"), false);
 });
 
-test("dashboard exposes stream whitelist instead of manual tuning inputs", async () => {
+test("dashboard omits deprecated manual stream tuning inputs", async () => {
   const html = await serveDashboardPage().text();
 
-  assert.match(html, /streamOptimizationModels/);
   assert.equal(html.includes("minDelay"), false);
   assert.equal(html.includes("maxDelay"), false);
   assert.equal(html.includes("adaptiveDelayFactor"), false);
@@ -173,4 +172,32 @@ test("dashboard exposes stream whitelist instead of manual tuning inputs", async
   assert.equal(html.includes("fastOutputDelay"), false);
   assert.equal(html.includes("finalLowDelay"), false);
   assert.equal(html.includes("disableOptimizationModels"), false);
+});
+
+test("dashboard keeps neo-brutal theme while restoring legacy admin controls", async () => {
+  const html = await serveDashboardPage().text();
+
+  assert.match(html, /NEO_BRUTAL_STYLE|--yellow: #ffd23f|neo-tabs/);
+  assert.equal(html.includes("bootstrap@5.3.0-alpha1"), false);
+  assert.match(html, /id="configTabs"/);
+  assert.match(html, /id="openaiForm"/);
+  assert.match(html, /id="anthropicForm"/);
+  assert.match(html, /id="geminiForm"/);
+  assert.match(html, /id="proxyForm"/);
+  assert.match(html, /id="openaiEndpointsContainer"/);
+  assert.match(html, /id="addOpenAIEndpoint"/);
+  assert.match(html, /api-key-toggle/);
+  assert.match(html, /id="anthropicUseNativeFetch"/);
+  assert.match(html, /id="geminiUseNativeFetch"/);
+  assert.match(html, /id="logoutBtn"/);
+  assert.equal(html.includes('id="streamForm"'), false);
+});
+
+test("dashboard exposes stream optimization whitelist in Anthropic and Gemini forms", async () => {
+  const html = await serveDashboardPage().text();
+
+  assert.match(html, /id="anthropicStreamOptimizationModels"/);
+  assert.match(html, /id="geminiStreamOptimizationModels"/);
+  assert.match(html, /streamOptimizationModelsFromInput/);
+  assert.match(html, /syncStreamOptimizationInputs/);
 });

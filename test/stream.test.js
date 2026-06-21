@@ -79,6 +79,40 @@ async function proxyStreamOutput({ model = "gpt-4o", streamOptimizationModels = 
   return readStreamText(response.body);
 }
 
+async function proxyGeminiStreamOutput({ streamOptimizationModels = [] } = {}) {
+  const upstreamBody = encoder.encode(
+    'data: {"modelId":"gemini-2.5-flash","candidates":[{"index":0,"content":{"parts":[{"text":"Hi"}]}}]}\n\n',
+  );
+  const request = new Request("https://worker.example/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gemini-2.5-flash",
+      stream: true,
+      messages: [{ role: "user", content: "Hi" }],
+    }),
+  });
+  const response = await handleProxyRequest(
+    request,
+    {
+      geminiEnabled: true,
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+      geminiUseNativeFetch: false,
+      streamOptimizationModels,
+    },
+    {
+      fetcher: async () =>
+        new Response(streamFromByteChunks([upstreamBody]), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    },
+  );
+
+  return readStreamText(response.body);
+}
+
 test("splitTextByCodePoint does not split surrogate pairs", () => {
   const emoji = "\u{1F604}";
   assert.deepEqual(splitTextByCodePoint(`A${emoji}B`), ["A", emoji, "B"]);
@@ -99,6 +133,15 @@ test("proxy streams pass through when model is not whitelisted", async () => {
 
   assert.deepEqual(contentEvents(output), ["AB"]);
   assert.equal(output.match(/data: \[DONE\]/g)?.length || 0, 0);
+});
+
+test("proxy converts Gemini streams even when stream optimization is not whitelisted", async () => {
+  const output = await proxyGeminiStreamOutput({ streamOptimizationModels: [] });
+  const events = parsedEvents(output);
+
+  assert.equal(events[0].choices[0].delta.content, "Hi");
+  assert.equal(events[0].model, "gemini-2.5-flash");
+  assert.doesNotMatch(output, /"candidates"/);
 });
 
 test("proxy streams optimize exact whitelisted models", async () => {

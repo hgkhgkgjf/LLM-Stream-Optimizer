@@ -219,7 +219,13 @@ class AdaptiveStreamPacer {
   }
 }
 
-export function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now = () => Date.now() }) {
+export function createSSETransformer({
+  provider,
+  config = {},
+  sleep = defaultSleep,
+  now = () => Date.now(),
+  optimize = true,
+}) {
   void config;
 
   async function processLine(line, state, writer = null) {
@@ -247,7 +253,7 @@ export function createSSETransformer({ provider, config = {}, sleep = defaultSle
         state.isStreamEnding = true;
         state.pacer.markEnding();
       }
-      const { kind, pieces } = isFinishChunk ? { kind: "raw", pieces: [chunk] } : splitChunk(chunk);
+      const { kind, pieces } = !optimize || isFinishChunk ? { kind: "raw", pieces: [chunk] } : splitChunk(chunk);
       for (let i = 0; i < pieces.length; i++) {
         const event = eventForChunk(pieces[i]);
         if (writer) await writer.write(encoder.encode(event));
