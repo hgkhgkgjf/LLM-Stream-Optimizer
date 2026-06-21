@@ -4,7 +4,7 @@ import { handleModelsRequest } from "./models.js";
 import { nativeFetch } from "./native-fetch.js";
 import { selectProvider } from "./providers/index.js";
 import { isModelAllowed, selectOpenAIEndpoint } from "./routing.js";
-import { createSSETransformer, shouldDisableOptimization } from "./stream.js";
+import { createSSETransformer, shouldOptimizeModel } from "./stream.js";
 
 function validateProxyApiKey(request, config) {
   if (!config.proxyApiKey) return true;
@@ -41,7 +41,7 @@ function modelNameFromResponse(response, fallback) {
 
 function streamResponse(upstreamResponse, provider, config, requestBody) {
   const modelName = modelNameFromResponse(upstreamResponse, requestBody.model);
-  if (shouldDisableOptimization(modelName, config.disableOptimizationModels)) {
+  if (!shouldOptimizeModel(modelName, config.streamOptimizationModels)) {
     return addCorsHeaders(upstreamResponse);
   }
   const transformer = createSSETransformer({ provider, config });

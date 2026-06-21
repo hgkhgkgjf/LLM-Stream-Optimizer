@@ -12,7 +12,7 @@ LLM Stream Optimizer 是一个基于 Cloudflare Workers 的轻量级 LLM API 代
 - 提供 OpenAI 兼容的代理接口和模型列表接口。
 - 支持多个 OpenAI 兼容上游端点，并可按模型路由。
 - 支持 Anthropic 和 Gemini 上游，并转换为 OpenAI 风格响应。
-- 支持流式输出优化，可配置字符延迟、快速输出和禁用优化模型。
+- 支持基于模型白名单的流式输出优化，可根据上游 chunk 节奏和内容形态自动适配。
 - 内置 `/admin` Web 管理页面。
 - 可使用 Cloudflare KV 持久化运行时配置。
 - 支持在原生 fetch 和 ShadowFetch 之间切换，以减少部分 Cloudflare 自动添加的上游请求头。
@@ -96,8 +96,15 @@ npm run deploy
 - `ANTHROPIC_API_KEY`：Anthropic API Key。
 - `ANTHROPIC_URL`：Anthropic API 基础地址，默认值为 `https://api.anthropic.com`。
 - `ANTHROPIC_USE_NATIVE_FETCH`：设为 `false` 可关闭 Anthropic 原生 fetch。
+- `STREAM_OPTIMIZATION_MODELS`：启用自适应流式优化的精确模型名列表，支持 JSON 数组或逗号分隔字符串，默认空列表。
 
 绑定 `CONFIG_KV` 后，大多数运行时设置也可以通过 `/admin` 管理页配置。
+
+### 流式输出优化
+
+流式优化按模型白名单启用。将精确模型名加入 `STREAM_OPTIMIZATION_MODELS` 或 `/admin` 白名单后，该模型才会进入优化链路；未列入白名单的模型会原样透传上游 SSE 流。
+
+优化器不再使用手动延迟参数。启用后，它会运行时观察上游 chunk 到达节奏和内容形态：大块自然语言会被平滑输出，原本已经很细的流尽量接近直通，代码、JSON、表格和长列表会以更大的快速块输出。
 
 ## API 使用示例
 

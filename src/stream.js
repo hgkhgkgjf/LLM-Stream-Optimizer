@@ -1,26 +1,47 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+const OBSERVATION_WINDOW = 8;
+const NATURAL_FIRST_FAST_UNITS = 6;
+const NATURAL_BACKLOG_FAST_THRESHOLD = 60;
+const NATURAL_BACKLOG_DRAIN_THRESHOLD = 120;
+const STRUCTURED_UNIT_SIZE = 48;
+const STRUCTURED_LARGE_UNIT_SIZE = 80;
+
+const graphemeSegmenter =
+  typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+
 function defaultSleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
-function numberOrDefault(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function pushRecent(values, value) {
+  values.push(value);
+  if (values.length > OBSERVATION_WINDOW) values.shift();
+}
+
+function trimComparableModelName(modelName) {
+  return String(modelName || "").toLowerCase().trim();
 }
 
 export function splitTextByCodePoint(text) {
-  return Array.from(String(text || ""));
+  const value = String(text || "");
+  if (!value) return [];
+  if (!graphemeSegmenter) return Array.from(value);
+  return Array.from(graphemeSegmenter.segment(value), (segment) => segment.segment);
 }
 
-export function shouldDisableOptimization(modelName, disabledModels = []) {
-  const current = String(modelName || "").toLowerCase().trim();
-  if (!current || !Array.isArray(disabledModels)) return false;
-  return disabledModels.some((model) => {
-    const candidate = String(model || "").toLowerCase().trim();
-    return candidate && (current === candidate || current.includes(candidate));
-  });
+export function shouldOptimizeModel(modelName, optimizationModels = []) {
+  const current = trimComparableModelName(modelName);
+  if (!current || !Array.isArray(optimizationModels)) return false;
+  return optimizationModels.some((model) => trimComparableModelName(model) === current);
 }
 
 function sseDataFromLine(line) {
@@ -38,6 +59,20 @@ function contentFromChunk(chunk) {
   return { content: "", isCompletion: false };
 }
 
+function hasNonTextPayload(chunk) {
+  if (chunk?.error) return true;
+  const choice = chunk.choices?.[0];
+  const delta = choice?.delta || {};
+  return !!(
+    delta.tool_calls ||
+    delta.function_call ||
+    delta.reasoning_content ||
+    delta.reasoning_signature ||
+    choice?.tool_calls ||
+    choice?.function_call
+  );
+}
+
 function chunkWithContent(chunk, content, isCompletion) {
   const choice = chunk.choices[0];
   if (isCompletion) {
@@ -52,10 +87,52 @@ function chunkWithContent(chunk, content, isCompletion) {
   };
 }
 
+function chunkGraphemes(graphemes, size) {
+  const chunks = [];
+  for (let index = 0; index < graphemes.length; index += size) {
+    chunks.push(graphemes.slice(index, index + size).join(""));
+  }
+  return chunks;
+}
+
+function isLikelyStructuredText(text) {
+  const value = String(text || "");
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/^(```|~~~)/.test(trimmed)) return true;
+  if (/^[\[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) return true;
+  if (/^\s*(const|let|var|function|class|import|export|if|for|while|return)\b/m.test(value)) return true;
+
+  const lines = value.split(/\r\n|\n|\r/).filter((line) => line.trim());
+  if (lines.length < 3) return false;
+  if (lines.some((line) => /\|/.test(line)) && lines.some((line) => /^\s*\|?\s*:?-{3,}:?\s*\|/.test(line))) {
+    return true;
+  }
+
+  const listLines = lines.filter((line) => /^\s*(?:[-*+]|\d+[.)])\s+/.test(line)).length;
+  if (listLines >= Math.min(3, lines.length)) return true;
+
+  const codeLikeLines = lines.filter((line) => /^\s{2,}\S/.test(line) || /[{};=<>]/.test(line)).length;
+  return codeLikeLines >= 2;
+}
+
 function splitChunk(chunk) {
+  if (hasNonTextPayload(chunk)) return { kind: "raw", pieces: [chunk] };
   const { content, isCompletion } = contentFromChunk(chunk);
-  if (!content) return [chunk];
-  return splitTextByCodePoint(content).map((char) => chunkWithContent(chunk, char, isCompletion));
+  if (!content) return { kind: "raw", pieces: [chunk] };
+
+  const graphemes = splitTextByCodePoint(content);
+  if (graphemes.length <= 1) return { kind: "natural", pieces: [chunk] };
+
+  const isStructured = isLikelyStructuredText(content);
+  const textPieces = isStructured
+    ? chunkGraphemes(graphemes, graphemes.length > 240 ? STRUCTURED_LARGE_UNIT_SIZE : STRUCTURED_UNIT_SIZE)
+    : graphemes;
+
+  return {
+    kind: isStructured ? "structured" : "natural",
+    pieces: textPieces.map((piece) => chunkWithContent(chunk, piece, isCompletion)),
+  };
 }
 
 function hasFinishReason(chunk) {
@@ -90,52 +167,67 @@ function takeCompleteLines(buffer, flush = false) {
   return { lines, buffer: buffer.slice(start) };
 }
 
-function calculateAdaptiveDelay(chunkSize, timeSinceLastChunk, config, isStreamEnding) {
-  const minDelay = Math.max(0, numberOrDefault(config.minDelay, 5));
-  const maxDelay = Math.max(minDelay, numberOrDefault(config.maxDelay, 40));
-  const finalLowDelay = Math.max(0, numberOrDefault(config.finalLowDelay, minDelay));
-  if (isStreamEnding) return finalLowDelay;
-  if (chunkSize <= 0) return minDelay;
-
-  const adaptiveDelayFactor = Math.max(0, Math.min(2, numberOrDefault(config.adaptiveDelayFactor, 0.5)));
-  const sizeInverseFactor = 1 + Math.log(1 + Math.min(chunkSize, 200)) / Math.log(20);
-  const normalizedSizeFactor = 1 / Math.max(0.5, Math.min(2, sizeInverseFactor));
-  const normalizedTime = Math.min(2000, Math.max(50, timeSinceLastChunk));
-  const timeFactor = Math.sqrt(normalizedTime / 300);
-  const adaptiveDelay =
-    minDelay + (maxDelay - minDelay) * normalizedSizeFactor * timeFactor * adaptiveDelayFactor;
-  return Math.min(maxDelay, Math.max(minDelay, adaptiveDelay));
-}
-
-function updateStreamDelayState(state, chunkSize, config, now) {
-  const chunkBufferSize = Math.max(1, numberOrDefault(config.chunkBufferSize, 10));
-  const threshold = Math.max(0, numberOrDefault(config.minContentLengthForFastOutput, 0));
-  const fastOutputDelay = Math.max(0, numberOrDefault(config.fastOutputDelay, state.currentDelay));
-  const currentTime = now();
-  const timeSinceLastChunk = Math.max(0, currentTime - state.lastChunkTime);
-  state.lastChunkTime = currentTime;
-  state.recentChunkSizes.push(chunkSize);
-  if (state.recentChunkSizes.length > chunkBufferSize) state.recentChunkSizes.shift();
-  state.maxSingleChunkSize = Math.max(state.maxSingleChunkSize, chunkSize);
-  if (threshold && state.maxSingleChunkSize > threshold) state.fastOutputMode = true;
-  if (state.fastOutputMode) {
-    state.currentDelay = fastOutputDelay;
-    return;
+class AdaptiveStreamPacer {
+  constructor(now) {
+    this.now = now;
+    this.lastUpstreamTime = null;
+    this.recentUpstreamIntervals = [];
+    this.recentUpstreamBytes = [];
+    this.outputUnits = 0;
+    this.isEnding = false;
   }
-  const averageChunkSize =
-    state.recentChunkSizes.reduce((sum, size) => sum + size, 0) / state.recentChunkSizes.length;
-  state.currentDelay = calculateAdaptiveDelay(averageChunkSize, timeSinceLastChunk, config, state.isStreamEnding);
+
+  observeUpstreamChunk(byteLength) {
+    const currentTime = this.now();
+    if (this.lastUpstreamTime !== null) {
+      pushRecent(this.recentUpstreamIntervals, Math.max(0, currentTime - this.lastUpstreamTime));
+    }
+    this.lastUpstreamTime = currentTime;
+    pushRecent(this.recentUpstreamBytes, Math.max(0, byteLength));
+  }
+
+  markEnding() {
+    this.isEnding = true;
+  }
+
+  delayFor({ kind, remaining }) {
+    if (this.isEnding || remaining <= 0) {
+      this.outputUnits++;
+      return 0;
+    }
+
+    let delay = 0;
+    if (kind === "structured") {
+      delay = remaining > 8 ? 0 : 1;
+    } else if (this.outputUnits < NATURAL_FIRST_FAST_UNITS) {
+      delay = remaining > 24 ? 1 : 0;
+    } else if (remaining > NATURAL_BACKLOG_DRAIN_THRESHOLD) {
+      delay = 0;
+    } else if (remaining > NATURAL_BACKLOG_FAST_THRESHOLD) {
+      delay = 1;
+    } else {
+      const upstreamBytes = average(this.recentUpstreamBytes);
+      const upstreamInterval = average(this.recentUpstreamIntervals);
+      if (upstreamBytes <= 128 && upstreamInterval >= 15) delay = 0;
+      else if (upstreamBytes > 2048) delay = 2;
+      else if (upstreamBytes > 512) delay = 3;
+      else delay = 4;
+    }
+
+    this.outputUnits++;
+    return delay;
+  }
 }
 
 export function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now = () => Date.now() }) {
-  const minDelay = Math.max(0, numberOrDefault(config.minDelay, 0));
-  const finalLowDelay = Math.max(0, numberOrDefault(config.finalLowDelay, minDelay));
+  void config;
 
   async function processLine(line, state, writer = null) {
     const trimmed = line.trim();
     if (!trimmed) return "";
     if (sseDataFromLine(trimmed) === "[DONE]") {
       state.done = true;
+      state.pacer.markEnding();
       if (state.doneEmitted) return "";
       state.doneEmitted = true;
       return writeEvent("data: [DONE]\n\n", writer);
@@ -151,14 +243,18 @@ export function createSSETransformer({ provider, config = {}, sleep = defaultSle
     let output = "";
     for (const chunk of chunks) {
       const isFinishChunk = hasFinishReason(chunk);
-      if (isFinishChunk) state.isStreamEnding = true;
-      const pieces = isFinishChunk ? [chunk] : splitChunk(chunk);
+      if (isFinishChunk) {
+        state.isStreamEnding = true;
+        state.pacer.markEnding();
+      }
+      const { kind, pieces } = isFinishChunk ? { kind: "raw", pieces: [chunk] } : splitChunk(chunk);
       for (let i = 0; i < pieces.length; i++) {
         const event = eventForChunk(pieces[i]);
         if (writer) await writer.write(encoder.encode(event));
         output += event;
-        const delay = isFinishChunk ? finalLowDelay : state.currentDelay ?? minDelay;
-        if (writer && delay > 0 && (i < pieces.length - 1 || isFinishChunk)) await sleep(delay);
+        const remaining = pieces.length - i - 1;
+        const delay = state.pacer.delayFor({ kind, remaining });
+        if (writer && delay > 0 && remaining > 0) await sleep(delay);
       }
       if (isFinishChunk) state.done = true;
     }
@@ -166,7 +262,12 @@ export function createSSETransformer({ provider, config = {}, sleep = defaultSle
   }
 
   async function transformText(text) {
-    const state = { done: false, doneEmitted: false };
+    const state = {
+      done: false,
+      doneEmitted: false,
+      isStreamEnding: false,
+      pacer: new AdaptiveStreamPacer(now),
+    };
     const lines = splitLines(text);
     let output = "";
     for (const line of lines) {
@@ -181,11 +282,7 @@ export function createSSETransformer({ provider, config = {}, sleep = defaultSle
       done: false,
       doneEmitted: false,
       isStreamEnding: false,
-      currentDelay: minDelay,
-      fastOutputMode: false,
-      lastChunkTime: now(),
-      maxSingleChunkSize: 0,
-      recentChunkSizes: [],
+      pacer: new AdaptiveStreamPacer(now),
     };
     return new ReadableStream({
       async start(controller) {
@@ -201,15 +298,15 @@ export function createSSETransformer({ provider, config = {}, sleep = defaultSle
           while (true) {
             const { value, done } = await reader.read();
             if (done) break;
-            updateStreamDelayState(state, value.length, config, now);
+            state.pacer.observeUpstreamChunk(value.length);
             buffer += decoder.decode(value, { stream: true });
             const result = takeCompleteLines(buffer);
             buffer = result.buffer;
-            const { lines } = result;
-            for (const line of lines) {
+            for (const line of result.lines) {
               await processLine(line, state, writer);
             }
           }
+          state.pacer.markEnding();
           buffer += decoder.decode();
           const result = takeCompleteLines(buffer, true);
           buffer = result.buffer;

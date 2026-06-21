@@ -16,11 +16,21 @@ function sseDataFromLine(line) {
   return line.slice(5).trim();
 }
 
-function extractTextFromParts(parts = []) {
-  return parts
-    .filter((part) => part && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("");
+function extractPartFields(parts = []) {
+  const fields = {
+    content: "",
+    reasoningContent: "",
+    reasoningSignature: "",
+  };
+  for (const part of parts) {
+    if (!part) continue;
+    if (typeof part.text === "string") {
+      if (part.thought === true) fields.reasoningContent += part.text;
+      else fields.content += part.text;
+    }
+    if (part.thoughtSignature) fields.reasoningSignature += String(part.thoughtSignature);
+  }
+  return fields;
 }
 
 function normalizeGeminiModel(modelName = "gemini-pro") {
@@ -30,7 +40,18 @@ function normalizeGeminiModel(modelName = "gemini-pro") {
   return model;
 }
 
-function openAICompletionChunk({ model, index = 0, content = "", finishReason = null }) {
+function openAICompletionChunk({
+  model,
+  index = 0,
+  content = "",
+  reasoningContent = "",
+  reasoningSignature = "",
+  finishReason = null,
+}) {
+  const delta = {};
+  if (reasoningContent) delta.reasoning_content = reasoningContent;
+  if (reasoningSignature) delta.reasoning_signature = reasoningSignature;
+  if (content) delta.content = content;
   return {
     id: `chatcmpl-${Date.now()}`,
     object: "chat.completion.chunk",
@@ -39,11 +60,86 @@ function openAICompletionChunk({ model, index = 0, content = "", finishReason = 
     choices: [
       {
         index,
-        delta: content ? { content } : {},
+        delta,
         finish_reason: finishReason,
       },
     ],
   };
+}
+
+function firstObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value));
+}
+
+function copyOptionalThinkingField(target, source, inputName, outputName, coerce = (value) => value) {
+  if (!source || !Object.hasOwn(source, inputName)) return;
+  const value = coerce(source[inputName]);
+  if (value !== undefined) target[outputName] = value;
+}
+
+function normalizeThinkingConfig(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const output = {};
+  copyOptionalThinkingField(output, input, "includeThoughts", "includeThoughts", (value) =>
+    typeof value === "boolean" ? value : undefined,
+  );
+  copyOptionalThinkingField(output, input, "include_thoughts", "includeThoughts", (value) =>
+    typeof value === "boolean" ? value : undefined,
+  );
+  copyOptionalThinkingField(output, input, "thinkingBudget", "thinkingBudget", (value) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  });
+  copyOptionalThinkingField(output, input, "thinking_budget", "thinkingBudget", (value) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  });
+  copyOptionalThinkingField(output, input, "thinkingLevel", "thinkingLevel", (value) =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined,
+  );
+  copyOptionalThinkingField(output, input, "thinking_level", "thinkingLevel", (value) =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined,
+  );
+  return Object.keys(output).length ? output : null;
+}
+
+function thinkingConfigFromRequest(requestBody = {}, modelName = "") {
+  const extraBody = firstObject(requestBody.extra_body, requestBody.extraBody);
+  const nestedExtraBody = firstObject(extraBody?.extra_body, extraBody?.extraBody);
+  const google = firstObject(extraBody?.google, nestedExtraBody?.google);
+  const explicit = normalizeThinkingConfig(
+    firstObject(
+      requestBody.thinkingConfig,
+      requestBody.thinking_config,
+      google?.thinkingConfig,
+      google?.thinking_config,
+    ),
+  );
+  if (explicit) return explicit;
+
+  const effort = typeof requestBody.reasoning_effort === "string" ? requestBody.reasoning_effort.trim() : "";
+  if (!effort) return null;
+  const normalizedEffort = effort.toLowerCase();
+  const normalizedModel = String(modelName || "").toLowerCase();
+  if (normalizedModel.includes("gemini-3")) {
+    const levels = {
+      minimal: normalizedModel.includes("gemini-3.1-pro") ? "low" : "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high",
+    };
+    if (Object.hasOwn(levels, normalizedEffort)) return { thinkingLevel: levels[normalizedEffort] };
+    return null;
+  }
+  const budgets = {
+    none: 0,
+    minimal: 1024,
+    low: 1024,
+    medium: 8192,
+    high: 24576,
+  };
+  if (Object.hasOwn(budgets, normalizedEffort)) return { thinkingBudget: budgets[normalizedEffort] };
+  return null;
 }
 
 export const geminiProvider = {
@@ -91,6 +187,8 @@ export const geminiProvider = {
         { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
       ],
     };
+    const thinkingConfig = thinkingConfigFromRequest(requestBody, requestBody.model);
+    if (thinkingConfig) body.generationConfig.thinkingConfig = thinkingConfig;
     if (systemInstruction) body.systemInstruction = systemInstruction;
 
     return {
@@ -109,11 +207,13 @@ export const geminiProvider = {
   convertResponseBody(body) {
     if (body.error) return body;
     const candidate = body.candidates?.[0];
-    const content = candidate?.content?.parts
-      ? extractTextFromParts(candidate.content.parts)
-      : candidate?.text || body.text || "";
+    const partFields = candidate?.content?.parts ? extractPartFields(candidate.content.parts) : null;
+    const content = partFields ? partFields.content : candidate?.text || body.text || "";
     const promptTokens = body.usageMetadata?.promptTokenCount || 0;
     const completionTokens = body.usageMetadata?.candidatesTokenCount || 0;
+    const message = { role: "assistant", content };
+    if (partFields?.reasoningContent) message.reasoning_content = partFields.reasoningContent;
+    if (partFields?.reasoningSignature) message.reasoning_signature = partFields.reasoningSignature;
     return {
       id: `gemini-${Date.now()}`,
       object: "chat.completion",
@@ -122,7 +222,7 @@ export const geminiProvider = {
       choices: [
         {
           index: 0,
-          message: { role: "assistant", content },
+          message,
           finish_reason: FINISH_REASONS[candidate?.finishReason] || candidate?.finishReason || "stop",
         },
       ],
@@ -143,10 +243,28 @@ export const geminiProvider = {
     const chunks = [];
     for (const candidate of body.candidates || []) {
       const model = body.modelId || candidate.modelId || "gemini";
-      const content = candidate.content?.parts
-        ? extractTextFromParts(candidate.content.parts)
-        : candidate.content?.text || candidate.text || "";
-      if (content) chunks.push(openAICompletionChunk({ model, index: candidate.index || 0, content }));
+      if (candidate.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (!part) continue;
+          const partFields = extractPartFields([part]);
+          if (partFields.reasoningContent || partFields.reasoningSignature) {
+            chunks.push(
+              openAICompletionChunk({
+                model,
+                index: candidate.index || 0,
+                reasoningContent: partFields.reasoningContent,
+                reasoningSignature: partFields.reasoningSignature,
+              }),
+            );
+          }
+          if (partFields.content) {
+            chunks.push(openAICompletionChunk({ model, index: candidate.index || 0, content: partFields.content }));
+          }
+        }
+      } else {
+        const content = candidate.content?.text || candidate.text || "";
+        if (content) chunks.push(openAICompletionChunk({ model, index: candidate.index || 0, content }));
+      }
       if (candidate.finishReason) {
         chunks.push(
           openAICompletionChunk({

@@ -1,8 +1,11 @@
-import { connect } from "cloudflare:sockets";
-
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const HEADER_FILTER_RE = /^(host|accept-encoding|cf-|content-length)$/i;
+
+async function getSocketConnector() {
+  const sockets = await import("cloudflare:sockets");
+  return sockets.connect;
+}
 
 function concatUint8Arrays(...arrays) {
   const total = arrays.reduce((sum, array) => sum + array.length, 0);
@@ -157,6 +160,7 @@ export async function nativeFetch(req, dstUrl) {
   if (!/^https?:$/.test(targetUrl.protocol)) {
     throw new Error("nativeFetch only supports HTTP and HTTPS URLs");
   }
+  const connect = await getSocketConnector();
   const port = Number(targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80));
   const socket = await connect(
     { hostname: targetUrl.hostname, port },

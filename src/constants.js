@@ -17,16 +17,11 @@ export const KV_CONFIG_KEYS = {
   MIN_CONTENT_LENGTH_FOR_FAST_OUTPUT: "min_content_length_for_fast_output",
   FAST_OUTPUT_DELAY: "fast_output_delay",
   FINAL_LOW_DELAY: "final_low_delay",
+  STREAM_OPTIMIZATION_MODELS: "stream_optimization_models",
 };
 
 export const DEFAULT_CONFIG = {
-  minDelay: 5,
-  maxDelay: 40,
-  adaptiveDelayFactor: 0.5,
-  chunkBufferSize: 10,
-  minContentLengthForFastOutput: 10000,
-  fastOutputDelay: 3,
-  finalLowDelay: 1,
+  streamOptimizationModels: [],
   openaiEndpoints: [],
   debugLogging: false,
 };

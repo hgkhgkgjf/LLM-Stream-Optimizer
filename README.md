@@ -12,7 +12,7 @@ LLM Stream Optimizer is a lightweight Cloudflare Workers proxy for OpenAI-compat
 - OpenAI-compatible proxy endpoint for chat completions and model listing.
 - Multiple OpenAI-compatible upstream endpoints with optional model routing.
 - Anthropic and Gemini upstream support with OpenAI-style response conversion.
-- Streaming response optimization with configurable delays and model exclusions.
+- Whitelist-based streaming optimization that automatically adapts to upstream chunk cadence and content shape.
 - Web administration dashboard at `/admin`.
 - Optional Cloudflare KV storage for runtime configuration.
 - ShadowFetch / native fetch switching for upstream requests that need fewer Cloudflare-added headers.
@@ -111,8 +111,15 @@ If you prefer the original copy-and-paste deployment flow:
 - `ANTHROPIC_API_KEY`: Anthropic API key.
 - `ANTHROPIC_URL`: Anthropic API base URL. Defaults to `https://api.anthropic.com`.
 - `ANTHROPIC_USE_NATIVE_FETCH`: Set to `false` to disable native fetch for Anthropic.
+- `STREAM_OPTIMIZATION_MODELS`: JSON array or comma-separated list of exact model names that should use adaptive stream optimization. Empty by default.
 
 Most runtime settings can also be configured from the `/admin` dashboard when `CONFIG_KV` is bound.
+
+### Stream Optimization
+
+Streaming optimization is opt-in by model. Add exact model names to `STREAM_OPTIMIZATION_MODELS` or the `/admin` whitelist to enable it. Models that are not listed pass through the upstream SSE stream unchanged.
+
+The optimizer no longer uses manual delay tuning. When enabled, it observes upstream chunk cadence and content shape at runtime: natural language can be smoothed from large bursts, already-small streams stay close to pass-through, and code, JSON, tables, and long lists are emitted in larger fast chunks.
 
 ## API Usage
 
@@ -156,7 +163,7 @@ Always make source edits in `src/`, then rerun `npm run build`. Hand edits to th
 - `src/worker.js`: Worker entrypoint and top-level route split.
 - `src/proxy.js`: OpenAI-compatible proxy request flow.
 - `src/providers/`: OpenAI, Gemini, and Anthropic request/response adapters.
-- `src/stream.js`: SSE parsing, OpenAI chunk normalization, and smoothing.
+- `src/stream.js`: SSE parsing, OpenAI chunk normalization, model whitelist checks, and adaptive pacing.
 - `src/admin/`: login/session handling and the `/admin` dashboard.
 - `src/config.js`: environment/KV config loading, masked secret handling, and persistence.
 

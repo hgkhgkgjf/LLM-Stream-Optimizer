@@ -161,3 +161,16 @@ test("dashboard page fetches config without unsafe HTML injection sinks", async 
   assert.equal(html.includes("insertAdjacentHTML"), false);
   assert.equal(html.includes("document.write"), false);
 });
+
+test("dashboard exposes stream whitelist instead of manual tuning inputs", async () => {
+  const html = await serveDashboardPage().text();
+
+  assert.match(html, /streamOptimizationModels/);
+  assert.equal(html.includes("minDelay"), false);
+  assert.equal(html.includes("maxDelay"), false);
+  assert.equal(html.includes("adaptiveDelayFactor"), false);
+  assert.equal(html.includes("chunkBufferSize"), false);
+  assert.equal(html.includes("fastOutputDelay"), false);
+  assert.equal(html.includes("finalLowDelay"), false);
+  assert.equal(html.includes("disableOptimizationModels"), false);
+});

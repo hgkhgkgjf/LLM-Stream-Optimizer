@@ -24,6 +24,30 @@ function parseJsonArray(value, fallback = []) {
   }
 }
 
+function normalizeStringList(value) {
+  return Array.isArray(value)
+    ? value
+        .filter((item) => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+}
+
+function parseStringList(value, fallback = []) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (Array.isArray(value)) return normalizeStringList(value);
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return normalizeStringList(parsed);
+  } catch {
+    // Fall through to comma-separated parsing for environment variables.
+  }
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function parseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return value === true || String(value).toLowerCase() === "true";
@@ -58,6 +82,7 @@ export function getDefaultConfig(env = {}) {
     anthropicUseNativeFetch: env.ANTHROPIC_USE_NATIVE_FETCH !== "false",
     proxyApiKey: env.PROXY_API_KEY || "",
     debugLogging: env.DEBUG_LOGGING === "true",
+    streamOptimizationModels: parseStringList(env.STREAM_OPTIMIZATION_MODELS, DEFAULT_CONFIG.streamOptimizationModels),
   };
 
   if (env.OPENAI_ENDPOINTS) {
@@ -148,6 +173,9 @@ export async function loadConfig(env = {}) {
       case "FINAL_LOW_DELAY":
         config.finalLowDelay = parsePositiveInt(value, config.finalLowDelay, 0);
         break;
+      case "STREAM_OPTIMIZATION_MODELS":
+        config.streamOptimizationModels = parseStringList(value);
+        break;
     }
   }
 
@@ -156,25 +184,8 @@ export async function loadConfig(env = {}) {
 
 export function normalizeConfigInput(input = {}) {
   const output = {};
-  const intFields = [
-    "minDelay",
-    "maxDelay",
-    "chunkBufferSize",
-    "minContentLengthForFastOutput",
-    "fastOutputDelay",
-    "finalLowDelay",
-  ];
-  for (const field of intFields) {
-    const parsed = parsePositiveInt(input[field], undefined, field === "minDelay" ? 1 : 0);
-    if (parsed !== undefined) output[field] = parsed;
-  }
-  const adaptiveDelayFactor = parseNumber(input.adaptiveDelayFactor, undefined);
-  if (adaptiveDelayFactor !== undefined) output.adaptiveDelayFactor = adaptiveDelayFactor;
-  if (Array.isArray(input.disableOptimizationModels)) {
-    output.disableOptimizationModels = input.disableOptimizationModels
-      .filter((model) => typeof model === "string")
-      .map((model) => model.trim())
-      .filter(Boolean);
+  if (Array.isArray(input.streamOptimizationModels)) {
+    output.streamOptimizationModels = normalizeStringList(input.streamOptimizationModels);
   }
   for (const field of [
     "defaultUpstreamUrl",
@@ -281,14 +292,7 @@ export function safeConfig(config) {
     anthropicApiKey: maskAPIKey(config.anthropicApiKey),
     anthropicUseNativeFetch: config.anthropicUseNativeFetch === true,
     proxyApiKey: maskAPIKey(config.proxyApiKey),
-    minDelay: config.minDelay,
-    maxDelay: config.maxDelay,
-    adaptiveDelayFactor: config.adaptiveDelayFactor,
-    chunkBufferSize: config.chunkBufferSize,
-    disableOptimizationModels: config.disableOptimizationModels || [],
-    minContentLengthForFastOutput: config.minContentLengthForFastOutput,
-    fastOutputDelay: config.fastOutputDelay,
-    finalLowDelay: config.finalLowDelay,
+    streamOptimizationModels: config.streamOptimizationModels || [],
   };
 }
 
@@ -307,14 +311,7 @@ export async function saveConfig(env, config) {
     [KV_CONFIG_KEYS.ANTHROPIC_API_KEY, config.anthropicApiKey || ""],
     [KV_CONFIG_KEYS.ANTHROPIC_USE_NATIVE_FETCH, String(!!config.anthropicUseNativeFetch)],
     [KV_CONFIG_KEYS.PROXY_API_KEY, config.proxyApiKey || ""],
-    [KV_CONFIG_KEYS.MIN_DELAY, String(config.minDelay)],
-    [KV_CONFIG_KEYS.MAX_DELAY, String(config.maxDelay)],
-    [KV_CONFIG_KEYS.ADAPTIVE_DELAY_FACTOR, String(config.adaptiveDelayFactor)],
-    [KV_CONFIG_KEYS.CHUNK_BUFFER_SIZE, String(config.chunkBufferSize)],
-    [KV_CONFIG_KEYS.DISABLE_OPTIMIZATION_MODELS, JSON.stringify(config.disableOptimizationModels || [])],
-    [KV_CONFIG_KEYS.MIN_CONTENT_LENGTH_FOR_FAST_OUTPUT, String(config.minContentLengthForFastOutput)],
-    [KV_CONFIG_KEYS.FAST_OUTPUT_DELAY, String(config.fastOutputDelay)],
-    [KV_CONFIG_KEYS.FINAL_LOW_DELAY, String(config.finalLowDelay)],
+    [KV_CONFIG_KEYS.STREAM_OPTIMIZATION_MODELS, JSON.stringify(config.streamOptimizationModels || [])],
   ];
   await Promise.all(entries.map(([key, value]) => env.CONFIG_KV.put(key, value)));
   return { success: true, message: "Configuration saved." };

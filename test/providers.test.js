@@ -32,6 +32,106 @@ test("Gemini non-stream response converts to OpenAI chat completion format", () 
   });
 });
 
+test("Gemini non-stream response separates thought summaries from visible content", () => {
+  const converted = geminiProvider.convertResponseBody({
+    modelId: "gemini-2.5-flash",
+    candidates: [
+      {
+        content: {
+          parts: [
+            { text: "draft reasoning", thought: true },
+            { text: "final answer" },
+          ],
+        },
+        finishReason: "STOP",
+      },
+    ],
+  });
+
+  assert.equal(converted.choices[0].message.reasoning_content, "draft reasoning");
+  assert.equal(converted.choices[0].message.content, "final answer");
+});
+
+test("Gemini stream thought parts convert to reasoning content chunks", () => {
+  const chunks = geminiProvider.convertStreamLine(
+    'data: {"modelId":"gemini-2.5-flash","candidates":[{"index":0,"content":{"parts":[{"text":"draft reasoning","thought":true},{"text":"final answer"}]}}]}',
+  );
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].choices[0].delta.reasoning_content, "draft reasoning");
+  assert.equal(chunks[0].choices[0].delta.content, undefined);
+  assert.equal(chunks[1].choices[0].delta.content, "final answer");
+});
+
+test("Gemini request construction forwards explicit thinking config", () => {
+  const upstreamRequest = geminiProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "gemini-2.5-flash",
+      messages: [{ role: "user", content: "Hello" }],
+      stream: true,
+      extra_body: {
+        google: {
+          thinking_config: {
+            include_thoughts: true,
+            thinking_budget: 1024,
+          },
+        },
+      },
+    },
+    config: {
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.deepEqual(body.generationConfig.thinkingConfig, {
+    includeThoughts: true,
+    thinkingBudget: 1024,
+  });
+});
+
+test("Gemini request construction maps reasoning effort to thinking config", () => {
+  const upstreamRequest = geminiProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "gemini-3-pro",
+      messages: [{ role: "user", content: "Hello" }],
+      reasoning_effort: "high",
+    },
+    config: {
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.deepEqual(body.generationConfig.thinkingConfig, {
+    thinkingLevel: "high",
+  });
+});
+
+test("Gemini request construction maps 2.5 minimal reasoning effort to documented budget", () => {
+  const upstreamRequest = geminiProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "gemini-2.5-flash",
+      messages: [{ role: "user", content: "Hello" }],
+      reasoning_effort: "minimal",
+    },
+    config: {
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.deepEqual(body.generationConfig.thinkingConfig, {
+    thinkingBudget: 1024,
+  });
+});
+
 test("Anthropic stream lines convert to OpenAI chunks", () => {
   const chunks = anthropicProvider.convertStreamLine(
     'data: {"type":"content_block_delta","delta":{"text":"Hi"}}',
@@ -40,6 +140,25 @@ test("Anthropic stream lines convert to OpenAI chunks", () => {
   assert.equal(chunks.length, 1);
   assert.equal(chunks[0].choices[0].delta.content, "Hi");
   assert.equal(chunks[0].choices[0].finish_reason, null);
+});
+
+test("Anthropic stream thinking deltas convert to reasoning content chunks", () => {
+  const chunks = anthropicProvider.convertStreamLine(
+    'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"private reasoning"}}',
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].choices[0].delta.reasoning_content, "private reasoning");
+  assert.equal(chunks[0].choices[0].delta.content, undefined);
+});
+
+test("Anthropic stream signature deltas are forwarded as reasoning signatures", () => {
+  const chunks = anthropicProvider.convertStreamLine(
+    'data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"sig-123"}}',
+  );
+
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].choices[0].delta.reasoning_signature, "sig-123");
 });
 
 test("Anthropic request construction preserves full Claude model ids", async () => {
@@ -62,6 +181,33 @@ test("Anthropic request construction preserves full Claude model ids", async () 
   assert.equal(body.model, "claude-3-5-sonnet-20241022");
 });
 
+test("Anthropic request construction uses messages API when thinking is requested", () => {
+  const upstreamRequest = anthropicProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "claude-3-7-sonnet-latest",
+      messages: [
+        { role: "system", content: "Be concise." },
+        { role: "user", content: "Hello" },
+      ],
+      stream: true,
+      max_tokens: 4096,
+      thinking: { type: "enabled", budget_tokens: 1024, display: "summarized" },
+    },
+    config: {
+      anthropicApiKey: "sk-ant-test",
+      anthropicUpstreamUrl: "https://api.anthropic.com",
+      anthropicUseNativeFetch: true,
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.match(upstreamRequest.url, /\/v1\/messages$/);
+  assert.equal(body.system, "Be concise.");
+  assert.deepEqual(body.messages, [{ role: "user", content: "Hello" }]);
+  assert.deepEqual(body.thinking, { type: "enabled", budget_tokens: 1024, display: "summarized" });
+});
+
 test("Anthropic non-stream response normalizes max token finish reason", () => {
   const converted = anthropicProvider.convertResponseBody({
     model: "claude-3-5-sonnet",
@@ -75,6 +221,21 @@ test("Anthropic non-stream response normalizes max token finish reason", () => {
 
   assert.equal(converted.choices[0].message.content, "partial");
   assert.equal(converted.choices[0].finish_reason, "length");
+});
+
+test("Anthropic non-stream response separates thinking blocks from visible content", () => {
+  const converted = anthropicProvider.convertResponseBody({
+    model: "claude-3-7-sonnet-latest",
+    content: [
+      { type: "thinking", thinking: "private reasoning", signature: "sig-123" },
+      { type: "text", text: "final answer" },
+    ],
+    stop_reason: "end_turn",
+  });
+
+  assert.equal(converted.choices[0].message.reasoning_content, "private reasoning");
+  assert.equal(converted.choices[0].message.reasoning_signature, "sig-123");
+  assert.equal(converted.choices[0].message.content, "final answer");
 });
 
 test("Anthropic stream message delta emits normalized finish chunk", () => {

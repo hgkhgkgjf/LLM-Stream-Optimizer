@@ -20,16 +20,11 @@ var KV_CONFIG_KEYS = {
   DISABLE_OPTIMIZATION_MODELS: "disable_optimization_models",
   MIN_CONTENT_LENGTH_FOR_FAST_OUTPUT: "min_content_length_for_fast_output",
   FAST_OUTPUT_DELAY: "fast_output_delay",
-  FINAL_LOW_DELAY: "final_low_delay"
+  FINAL_LOW_DELAY: "final_low_delay",
+  STREAM_OPTIMIZATION_MODELS: "stream_optimization_models"
 };
 var DEFAULT_CONFIG = {
-  minDelay: 5,
-  maxDelay: 40,
-  adaptiveDelayFactor: 0.5,
-  chunkBufferSize: 10,
-  minContentLengthForFastOutput: 1e4,
-  fastOutputDelay: 3,
-  finalLowDelay: 1,
+  streamOptimizationModels: [],
   openaiEndpoints: [],
   debugLogging: false
 };
@@ -62,6 +57,21 @@ function parseJsonArray(value, fallback = []) {
   }
 }
 __name(parseJsonArray, "parseJsonArray");
+function normalizeStringList(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean) : [];
+}
+__name(normalizeStringList, "normalizeStringList");
+function parseStringList(value, fallback = []) {
+  if (value === void 0 || value === null || value === "") return fallback;
+  if (Array.isArray(value)) return normalizeStringList(value);
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return normalizeStringList(parsed);
+  } catch {
+  }
+  return String(value).split(",").map((item) => item.trim()).filter(Boolean);
+}
+__name(parseStringList, "parseStringList");
 function parseBoolean(value, fallback = false) {
   if (value === void 0 || value === null || value === "") return fallback;
   return value === true || String(value).toLowerCase() === "true";
@@ -95,7 +105,8 @@ function getDefaultConfig(env = {}) {
     anthropicApiKey: env.ANTHROPIC_API_KEY || "",
     anthropicUseNativeFetch: env.ANTHROPIC_USE_NATIVE_FETCH !== "false",
     proxyApiKey: env.PROXY_API_KEY || "",
-    debugLogging: env.DEBUG_LOGGING === "true"
+    debugLogging: env.DEBUG_LOGGING === "true",
+    streamOptimizationModels: parseStringList(env.STREAM_OPTIMIZATION_MODELS, DEFAULT_CONFIG.streamOptimizationModels)
   };
   if (env.OPENAI_ENDPOINTS) {
     config.openaiEndpoints = parseJsonArray(env.OPENAI_ENDPOINTS);
@@ -181,6 +192,9 @@ async function loadConfig(env = {}) {
       case "FINAL_LOW_DELAY":
         config.finalLowDelay = parsePositiveInt(value, config.finalLowDelay, 0);
         break;
+      case "STREAM_OPTIMIZATION_MODELS":
+        config.streamOptimizationModels = parseStringList(value);
+        break;
     }
   }
   return config;
@@ -188,22 +202,8 @@ async function loadConfig(env = {}) {
 __name(loadConfig, "loadConfig");
 function normalizeConfigInput(input = {}) {
   const output = {};
-  const intFields = [
-    "minDelay",
-    "maxDelay",
-    "chunkBufferSize",
-    "minContentLengthForFastOutput",
-    "fastOutputDelay",
-    "finalLowDelay"
-  ];
-  for (const field of intFields) {
-    const parsed = parsePositiveInt(input[field], void 0, field === "minDelay" ? 1 : 0);
-    if (parsed !== void 0) output[field] = parsed;
-  }
-  const adaptiveDelayFactor = parseNumber(input.adaptiveDelayFactor, void 0);
-  if (adaptiveDelayFactor !== void 0) output.adaptiveDelayFactor = adaptiveDelayFactor;
-  if (Array.isArray(input.disableOptimizationModels)) {
-    output.disableOptimizationModels = input.disableOptimizationModels.filter((model2) => typeof model2 === "string").map((model2) => model2.trim()).filter(Boolean);
+  if (Array.isArray(input.streamOptimizationModels)) {
+    output.streamOptimizationModels = normalizeStringList(input.streamOptimizationModels);
   }
   for (const field of [
     "defaultUpstreamUrl",
@@ -297,14 +297,7 @@ function safeConfig(config) {
     anthropicApiKey: maskAPIKey(config.anthropicApiKey),
     anthropicUseNativeFetch: config.anthropicUseNativeFetch === true,
     proxyApiKey: maskAPIKey(config.proxyApiKey),
-    minDelay: config.minDelay,
-    maxDelay: config.maxDelay,
-    adaptiveDelayFactor: config.adaptiveDelayFactor,
-    chunkBufferSize: config.chunkBufferSize,
-    disableOptimizationModels: config.disableOptimizationModels || [],
-    minContentLengthForFastOutput: config.minContentLengthForFastOutput,
-    fastOutputDelay: config.fastOutputDelay,
-    finalLowDelay: config.finalLowDelay
+    streamOptimizationModels: config.streamOptimizationModels || []
   };
 }
 __name(safeConfig, "safeConfig");
@@ -323,14 +316,7 @@ async function saveConfig(env, config) {
     [KV_CONFIG_KEYS.ANTHROPIC_API_KEY, config.anthropicApiKey || ""],
     [KV_CONFIG_KEYS.ANTHROPIC_USE_NATIVE_FETCH, String(!!config.anthropicUseNativeFetch)],
     [KV_CONFIG_KEYS.PROXY_API_KEY, config.proxyApiKey || ""],
-    [KV_CONFIG_KEYS.MIN_DELAY, String(config.minDelay)],
-    [KV_CONFIG_KEYS.MAX_DELAY, String(config.maxDelay)],
-    [KV_CONFIG_KEYS.ADAPTIVE_DELAY_FACTOR, String(config.adaptiveDelayFactor)],
-    [KV_CONFIG_KEYS.CHUNK_BUFFER_SIZE, String(config.chunkBufferSize)],
-    [KV_CONFIG_KEYS.DISABLE_OPTIMIZATION_MODELS, JSON.stringify(config.disableOptimizationModels || [])],
-    [KV_CONFIG_KEYS.MIN_CONTENT_LENGTH_FOR_FAST_OUTPUT, String(config.minContentLengthForFastOutput)],
-    [KV_CONFIG_KEYS.FAST_OUTPUT_DELAY, String(config.fastOutputDelay)],
-    [KV_CONFIG_KEYS.FINAL_LOW_DELAY, String(config.finalLowDelay)]
+    [KV_CONFIG_KEYS.STREAM_OPTIMIZATION_MODELS, JSON.stringify(config.streamOptimizationModels || [])]
   ];
   await Promise.all(entries.map(([key, value]) => env.CONFIG_KV.put(key, value)));
   return { success: true, message: "Configuration saved." };
@@ -654,16 +640,8 @@ function serveDashboardPage() {
       </section>
       <section>
         <h2>Stream optimizer</h2>
-        <div class="grid">
-          <div><label for="minDelay">Min delay</label><input id="minDelay" type="number" min="0"></div>
-          <div><label for="maxDelay">Max delay</label><input id="maxDelay" type="number" min="0"></div>
-          <div><label for="adaptiveDelayFactor">Adaptive delay factor</label><input id="adaptiveDelayFactor" type="number" step="0.1" min="0"></div>
-          <div><label for="chunkBufferSize">Chunk buffer size</label><input id="chunkBufferSize" type="number" min="1"></div>
-          <div><label for="minContentLengthForFastOutput">Fast output threshold</label><input id="minContentLengthForFastOutput" type="number" min="0"></div>
-          <div><label for="fastOutputDelay">Fast output delay</label><input id="fastOutputDelay" type="number" min="0"></div>
-          <div><label for="finalLowDelay">Final low delay</label><input id="finalLowDelay" type="number" min="0"></div>
-          <div><label for="disableOptimizationModels">Disable optimization models</label><input id="disableOptimizationModels" placeholder="gpt-4o, claude-3"></div>
-        </div>
+        <label for="streamOptimizationModels">Optimized model whitelist</label>
+        <input id="streamOptimizationModels" placeholder="gpt-4o, claude-3-5-sonnet-20241022">
       </section>
       <div class="actions">
         <span id="message" role="status"></span>
@@ -674,9 +652,7 @@ function serveDashboardPage() {
   <script>
     const ids = [
       'defaultUpstreamUrl','defaultOutgoingApiKey','geminiUpstreamUrl','geminiApiKey',
-      'anthropicUpstreamUrl','anthropicApiKey','proxyApiKey','minDelay','maxDelay',
-      'adaptiveDelayFactor','chunkBufferSize','minContentLengthForFastOutput','fastOutputDelay',
-      'finalLowDelay','disableOptimizationModels'
+      'anthropicUpstreamUrl','anthropicApiKey','proxyApiKey','streamOptimizationModels'
     ];
     const byId = id => document.getElementById(id);
     const message = byId('message');
@@ -687,7 +663,7 @@ function serveDashboardPage() {
       const data = await response.json();
       const config = data.config || {};
       for (const id of ids) {
-        if (id === 'disableOptimizationModels') setValue(id, (config.disableOptimizationModels || []).join(', '));
+        if (id === 'streamOptimizationModels') setValue(id, (config.streamOptimizationModels || []).join(', '));
         else setValue(id, config[id]);
       }
       byId('geminiUseNativeFetch').checked = config.geminiUseNativeFetch === true;
@@ -709,14 +685,7 @@ function serveDashboardPage() {
         anthropicApiKey: byId('anthropicApiKey').value.trim(),
         anthropicUseNativeFetch: byId('anthropicUseNativeFetch').checked,
         proxyApiKey: byId('proxyApiKey').value.trim(),
-        minDelay: byId('minDelay').value,
-        maxDelay: byId('maxDelay').value,
-        adaptiveDelayFactor: byId('adaptiveDelayFactor').value,
-        chunkBufferSize: byId('chunkBufferSize').value,
-        minContentLengthForFastOutput: byId('minContentLengthForFastOutput').value,
-        fastOutputDelay: byId('fastOutputDelay').value,
-        finalLowDelay: byId('finalLowDelay').value,
-        disableOptimizationModels: byId('disableOptimizationModels').value.split(',').map(x => x.trim()).filter(Boolean)
+        streamOptimizationModels: byId('streamOptimizationModels').value.split(',').map(x => x.trim()).filter(Boolean)
       };
     }
     byId('config-form').addEventListener('submit', async event => {
@@ -873,10 +842,14 @@ function createLogger(enabled = false) {
 __name(createLogger, "createLogger");
 
 // src/native-fetch.js
-import { connect } from "cloudflare:sockets";
 var encoder2 = new TextEncoder();
 var decoder = new TextDecoder();
 var HEADER_FILTER_RE = /^(host|accept-encoding|cf-|content-length)$/i;
+async function getSocketConnector() {
+  const sockets = await import("cloudflare:sockets");
+  return sockets.connect;
+}
+__name(getSocketConnector, "getSocketConnector");
 function concatUint8Arrays(...arrays) {
   const total = arrays.reduce((sum, array) => sum + array.length, 0);
   const result = new Uint8Array(total);
@@ -1026,6 +999,7 @@ async function nativeFetch(req, dstUrl) {
   if (!/^https?:$/.test(targetUrl.protocol)) {
     throw new Error("nativeFetch only supports HTTP and HTTPS URLs");
   }
+  const connect = await getSocketConnector();
   const port = Number(targetUrl.port || (targetUrl.protocol === "https:" ? 443 : 80));
   const socket = await connect(
     { hostname: targetUrl.hostname, port },
@@ -1306,7 +1280,17 @@ function normalizeFinishReason(reason) {
   return FINISH_REASONS[reason] || reason || "stop";
 }
 __name(normalizeFinishReason, "normalizeFinishReason");
-function openAICompletionChunk({ model: model2 = "claude-3", content = "", finishReason = null }) {
+function openAICompletionChunk({
+  model: model2 = "claude-3",
+  content = "",
+  reasoningContent = "",
+  reasoningSignature = "",
+  finishReason = null
+}) {
+  const delta = {};
+  if (reasoningContent) delta.reasoning_content = reasoningContent;
+  if (reasoningSignature) delta.reasoning_signature = reasoningSignature;
+  if (content) delta.content = content;
   return {
     id: `anthropic-${Date.now()}`,
     object: "chat.completion.chunk",
@@ -1315,13 +1299,60 @@ function openAICompletionChunk({ model: model2 = "claude-3", content = "", finis
     choices: [
       {
         index: 0,
-        delta: content ? { content } : {},
+        delta,
         finish_reason: finishReason
       }
     ]
   };
 }
 __name(openAICompletionChunk, "openAICompletionChunk");
+function firstObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value));
+}
+__name(firstObject, "firstObject");
+function textFromMessageContent(content) {
+  if (Array.isArray(content)) {
+    return content.filter((part) => part && typeof part.text === "string").map((part) => part.text).join("");
+  }
+  return String(content || "");
+}
+__name(textFromMessageContent, "textFromMessageContent");
+function thinkingConfigFromRequest(requestBody = {}) {
+  const extraBody = firstObject(requestBody.extra_body, requestBody.extraBody);
+  const nestedExtraBody = firstObject(extraBody?.extra_body, extraBody?.extraBody);
+  const anthropic = firstObject(extraBody?.anthropic, nestedExtraBody?.anthropic);
+  return firstObject(requestBody.thinking, anthropic?.thinking, extraBody?.thinking, nestedExtraBody?.thinking);
+}
+__name(thinkingConfigFromRequest, "thinkingConfigFromRequest");
+function createMessagesRequestBody(requestBody, thinking) {
+  const messages = [];
+  const systemMessages = [];
+  for (const message of requestBody.messages || []) {
+    const content = textFromMessageContent(message.content);
+    if (message.role === "system") {
+      if (content) systemMessages.push(content);
+      continue;
+    }
+    messages.push({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content
+    });
+  }
+  if (messages.length === 0) messages.push({ role: "user", content: "Hello" });
+  const body = {
+    model: String(requestBody.model || ""),
+    messages,
+    max_tokens: requestBody.max_tokens || 4e3,
+    stream: requestBody.stream
+  };
+  if (systemMessages.length) body.system = systemMessages.join("\n\n");
+  if (thinking) body.thinking = thinking;
+  if (requestBody.temperature !== void 0) body.temperature = requestBody.temperature;
+  if (requestBody.top_p !== void 0) body.top_p = requestBody.top_p;
+  if (requestBody.stop !== void 0) body.stop_sequences = Array.isArray(requestBody.stop) ? requestBody.stop : [requestBody.stop];
+  return body;
+}
+__name(createMessagesRequestBody, "createMessagesRequestBody");
 var anthropicProvider = {
   id: "anthropic",
   detect(modelName, config = {}) {
@@ -1329,7 +1360,21 @@ var anthropicProvider = {
   },
   createRequest({ request, requestBody, config }) {
     const apiKey = request.headers.get("X-Anthropic-API-Key") || selectWeightedKey(config.anthropicApiKey);
-    const prompt = (requestBody.messages || []).map((message) => `${message.role === "assistant" ? "Assistant" : "Human"}: ${message.content || ""}`).join("\n\n");
+    const thinking = thinkingConfigFromRequest(requestBody);
+    if (thinking) {
+      return {
+        method: "POST",
+        headers: new Headers({
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify(createMessagesRequestBody(requestBody, thinking)),
+        url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/messages"),
+        useNativeFetch: config.anthropicUseNativeFetch
+      };
+    }
+    const prompt = (requestBody.messages || []).map((message) => `${message.role === "assistant" ? "Assistant" : "Human"}: ${textFromMessageContent(message.content)}`).join("\n\n");
     return {
       method: "POST",
       headers: new Headers({
@@ -1355,13 +1400,24 @@ Assistant:`,
   convertResponseBody(body) {
     if (body.error) return body;
     let content = "";
+    let reasoningContent = "";
+    let reasoningSignature = "";
     if (Array.isArray(body.content)) {
-      content = body.content.filter((block) => block.type === "text").map((block) => block.text || "").join("");
+      for (const block of body.content) {
+        if (block?.type === "text") content += block.text || "";
+        if (block?.type === "thinking") {
+          reasoningContent += block.thinking || block.text || "";
+          if (block.signature) reasoningSignature += String(block.signature);
+        }
+      }
     } else {
       content = body.completion || body.text || "";
     }
     const promptTokens = body.usage?.input_tokens || 0;
     const completionTokens = body.usage?.output_tokens || 0;
+    const message = { role: "assistant", content };
+    if (reasoningContent) message.reasoning_content = reasoningContent;
+    if (reasoningSignature) message.reasoning_signature = reasoningSignature;
     return {
       id: `anthropic-${Date.now()}`,
       object: "chat.completion",
@@ -1370,7 +1426,7 @@ Assistant:`,
       choices: [
         {
           index: 0,
-          message: { role: "assistant", content },
+          message,
           finish_reason: normalizeFinishReason(body.stop_reason)
         }
       ],
@@ -1387,8 +1443,16 @@ Assistant:`,
     if (!data || data === "[DONE]") return [];
     const body = JSON.parse(data);
     if (body.error) return [body];
-    if (body.type === "content_block_delta" && body.delta?.text) {
-      return [openAICompletionChunk({ content: body.delta.text })];
+    if (body.type === "content_block_delta") {
+      if (body.delta?.thinking) {
+        return [openAICompletionChunk({ reasoningContent: body.delta.thinking })];
+      }
+      if (body.delta?.signature) {
+        return [openAICompletionChunk({ reasoningSignature: body.delta.signature })];
+      }
+      if (body.delta?.text) {
+        return [openAICompletionChunk({ content: body.delta.text })];
+      }
     }
     if (body.type === "completion") {
       const chunks = [];
@@ -1422,10 +1486,23 @@ function sseDataFromLine2(line) {
   return line.slice(5).trim();
 }
 __name(sseDataFromLine2, "sseDataFromLine");
-function extractTextFromParts(parts = []) {
-  return parts.filter((part) => part && typeof part.text === "string").map((part) => part.text).join("");
+function extractPartFields(parts = []) {
+  const fields = {
+    content: "",
+    reasoningContent: "",
+    reasoningSignature: ""
+  };
+  for (const part of parts) {
+    if (!part) continue;
+    if (typeof part.text === "string") {
+      if (part.thought === true) fields.reasoningContent += part.text;
+      else fields.content += part.text;
+    }
+    if (part.thoughtSignature) fields.reasoningSignature += String(part.thoughtSignature);
+  }
+  return fields;
 }
-__name(extractTextFromParts, "extractTextFromParts");
+__name(extractPartFields, "extractPartFields");
 function normalizeGeminiModel(modelName = "gemini-pro") {
   let model2 = String(modelName || "gemini-pro");
   if (!model2.startsWith("gemini-") && !model2.startsWith("models/")) model2 = `gemini-${model2}`;
@@ -1433,7 +1510,18 @@ function normalizeGeminiModel(modelName = "gemini-pro") {
   return model2;
 }
 __name(normalizeGeminiModel, "normalizeGeminiModel");
-function openAICompletionChunk2({ model: model2, index = 0, content = "", finishReason = null }) {
+function openAICompletionChunk2({
+  model: model2,
+  index = 0,
+  content = "",
+  reasoningContent = "",
+  reasoningSignature = "",
+  finishReason = null
+}) {
+  const delta = {};
+  if (reasoningContent) delta.reasoning_content = reasoningContent;
+  if (reasoningSignature) delta.reasoning_signature = reasoningSignature;
+  if (content) delta.content = content;
   return {
     id: `chatcmpl-${Date.now()}`,
     object: "chat.completion.chunk",
@@ -1442,13 +1530,103 @@ function openAICompletionChunk2({ model: model2, index = 0, content = "", finish
     choices: [
       {
         index,
-        delta: content ? { content } : {},
+        delta,
         finish_reason: finishReason
       }
     ]
   };
 }
 __name(openAICompletionChunk2, "openAICompletionChunk");
+function firstObject2(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value));
+}
+__name(firstObject2, "firstObject");
+function copyOptionalThinkingField(target, source, inputName, outputName, coerce = (value) => value) {
+  if (!source || !Object.hasOwn(source, inputName)) return;
+  const value = coerce(source[inputName]);
+  if (value !== void 0) target[outputName] = value;
+}
+__name(copyOptionalThinkingField, "copyOptionalThinkingField");
+function normalizeThinkingConfig(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const output = {};
+  copyOptionalThinkingField(
+    output,
+    input,
+    "includeThoughts",
+    "includeThoughts",
+    (value) => typeof value === "boolean" ? value : void 0
+  );
+  copyOptionalThinkingField(
+    output,
+    input,
+    "include_thoughts",
+    "includeThoughts",
+    (value) => typeof value === "boolean" ? value : void 0
+  );
+  copyOptionalThinkingField(output, input, "thinkingBudget", "thinkingBudget", (value) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : void 0;
+  });
+  copyOptionalThinkingField(output, input, "thinking_budget", "thinkingBudget", (value) => {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : void 0;
+  });
+  copyOptionalThinkingField(
+    output,
+    input,
+    "thinkingLevel",
+    "thinkingLevel",
+    (value) => typeof value === "string" && value.trim() ? value.trim() : void 0
+  );
+  copyOptionalThinkingField(
+    output,
+    input,
+    "thinking_level",
+    "thinkingLevel",
+    (value) => typeof value === "string" && value.trim() ? value.trim() : void 0
+  );
+  return Object.keys(output).length ? output : null;
+}
+__name(normalizeThinkingConfig, "normalizeThinkingConfig");
+function thinkingConfigFromRequest2(requestBody = {}, modelName = "") {
+  const extraBody = firstObject2(requestBody.extra_body, requestBody.extraBody);
+  const nestedExtraBody = firstObject2(extraBody?.extra_body, extraBody?.extraBody);
+  const google = firstObject2(extraBody?.google, nestedExtraBody?.google);
+  const explicit = normalizeThinkingConfig(
+    firstObject2(
+      requestBody.thinkingConfig,
+      requestBody.thinking_config,
+      google?.thinkingConfig,
+      google?.thinking_config
+    )
+  );
+  if (explicit) return explicit;
+  const effort = typeof requestBody.reasoning_effort === "string" ? requestBody.reasoning_effort.trim() : "";
+  if (!effort) return null;
+  const normalizedEffort = effort.toLowerCase();
+  const normalizedModel = String(modelName || "").toLowerCase();
+  if (normalizedModel.includes("gemini-3")) {
+    const levels = {
+      minimal: normalizedModel.includes("gemini-3.1-pro") ? "low" : "minimal",
+      low: "low",
+      medium: "medium",
+      high: "high"
+    };
+    if (Object.hasOwn(levels, normalizedEffort)) return { thinkingLevel: levels[normalizedEffort] };
+    return null;
+  }
+  const budgets = {
+    none: 0,
+    minimal: 1024,
+    low: 1024,
+    medium: 8192,
+    high: 24576
+  };
+  if (Object.hasOwn(budgets, normalizedEffort)) return { thinkingBudget: budgets[normalizedEffort] };
+  return null;
+}
+__name(thinkingConfigFromRequest2, "thinkingConfigFromRequest");
 var geminiProvider = {
   id: "gemini",
   detect(modelName, config = {}) {
@@ -1490,6 +1668,8 @@ var geminiProvider = {
         { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
       ]
     };
+    const thinkingConfig = thinkingConfigFromRequest2(requestBody, requestBody.model);
+    if (thinkingConfig) body.generationConfig.thinkingConfig = thinkingConfig;
     if (systemInstruction) body.systemInstruction = systemInstruction;
     return {
       method: "POST",
@@ -1506,9 +1686,13 @@ var geminiProvider = {
   convertResponseBody(body) {
     if (body.error) return body;
     const candidate = body.candidates?.[0];
-    const content = candidate?.content?.parts ? extractTextFromParts(candidate.content.parts) : candidate?.text || body.text || "";
+    const partFields = candidate?.content?.parts ? extractPartFields(candidate.content.parts) : null;
+    const content = partFields ? partFields.content : candidate?.text || body.text || "";
     const promptTokens = body.usageMetadata?.promptTokenCount || 0;
     const completionTokens = body.usageMetadata?.candidatesTokenCount || 0;
+    const message = { role: "assistant", content };
+    if (partFields?.reasoningContent) message.reasoning_content = partFields.reasoningContent;
+    if (partFields?.reasoningSignature) message.reasoning_signature = partFields.reasoningSignature;
     return {
       id: `gemini-${Date.now()}`,
       object: "chat.completion",
@@ -1517,7 +1701,7 @@ var geminiProvider = {
       choices: [
         {
           index: 0,
-          message: { role: "assistant", content },
+          message,
           finish_reason: FINISH_REASONS2[candidate?.finishReason] || candidate?.finishReason || "stop"
         }
       ],
@@ -1537,8 +1721,28 @@ var geminiProvider = {
     const chunks = [];
     for (const candidate of body.candidates || []) {
       const model2 = body.modelId || candidate.modelId || "gemini";
-      const content = candidate.content?.parts ? extractTextFromParts(candidate.content.parts) : candidate.content?.text || candidate.text || "";
-      if (content) chunks.push(openAICompletionChunk2({ model: model2, index: candidate.index || 0, content }));
+      if (candidate.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (!part) continue;
+          const partFields = extractPartFields([part]);
+          if (partFields.reasoningContent || partFields.reasoningSignature) {
+            chunks.push(
+              openAICompletionChunk2({
+                model: model2,
+                index: candidate.index || 0,
+                reasoningContent: partFields.reasoningContent,
+                reasoningSignature: partFields.reasoningSignature
+              })
+            );
+          }
+          if (partFields.content) {
+            chunks.push(openAICompletionChunk2({ model: model2, index: candidate.index || 0, content: partFields.content }));
+          }
+        }
+      } else {
+        const content = candidate.content?.text || candidate.text || "";
+        if (content) chunks.push(openAICompletionChunk2({ model: model2, index: candidate.index || 0, content }));
+      }
       if (candidate.finishReason) {
         chunks.push(
           openAICompletionChunk2({
@@ -1599,28 +1803,44 @@ __name(selectProvider, "selectProvider");
 // src/stream.js
 var encoder3 = new TextEncoder();
 var decoder2 = new TextDecoder();
+var OBSERVATION_WINDOW = 8;
+var NATURAL_FIRST_FAST_UNITS = 6;
+var NATURAL_BACKLOG_FAST_THRESHOLD = 60;
+var NATURAL_BACKLOG_DRAIN_THRESHOLD = 120;
+var STRUCTURED_UNIT_SIZE = 48;
+var STRUCTURED_LARGE_UNIT_SIZE = 80;
+var graphemeSegmenter = typeof Intl !== "undefined" && typeof Intl.Segmenter === "function" ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
 function defaultSleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 __name(defaultSleep, "defaultSleep");
-function numberOrDefault(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
-__name(numberOrDefault, "numberOrDefault");
+__name(average, "average");
+function pushRecent(values, value) {
+  values.push(value);
+  if (values.length > OBSERVATION_WINDOW) values.shift();
+}
+__name(pushRecent, "pushRecent");
+function trimComparableModelName(modelName) {
+  return String(modelName || "").toLowerCase().trim();
+}
+__name(trimComparableModelName, "trimComparableModelName");
 function splitTextByCodePoint(text) {
-  return Array.from(String(text || ""));
+  const value = String(text || "");
+  if (!value) return [];
+  if (!graphemeSegmenter) return Array.from(value);
+  return Array.from(graphemeSegmenter.segment(value), (segment) => segment.segment);
 }
 __name(splitTextByCodePoint, "splitTextByCodePoint");
-function shouldDisableOptimization(modelName, disabledModels = []) {
-  const current = String(modelName || "").toLowerCase().trim();
-  if (!current || !Array.isArray(disabledModels)) return false;
-  return disabledModels.some((model2) => {
-    const candidate = String(model2 || "").toLowerCase().trim();
-    return candidate && (current === candidate || current.includes(candidate));
-  });
+function shouldOptimizeModel(modelName, optimizationModels = []) {
+  const current = trimComparableModelName(modelName);
+  if (!current || !Array.isArray(optimizationModels)) return false;
+  return optimizationModels.some((model2) => trimComparableModelName(model2) === current);
 }
-__name(shouldDisableOptimization, "shouldDisableOptimization");
+__name(shouldOptimizeModel, "shouldOptimizeModel");
 function sseDataFromLine4(line) {
   if (!line.startsWith("data:")) return null;
   return line.slice(5).trim();
@@ -1636,6 +1856,13 @@ function contentFromChunk(chunk) {
   return { content: "", isCompletion: false };
 }
 __name(contentFromChunk, "contentFromChunk");
+function hasNonTextPayload(chunk) {
+  if (chunk?.error) return true;
+  const choice = chunk.choices?.[0];
+  const delta = choice?.delta || {};
+  return !!(delta.tool_calls || delta.function_call || delta.reasoning_content || delta.reasoning_signature || choice?.tool_calls || choice?.function_call);
+}
+__name(hasNonTextPayload, "hasNonTextPayload");
 function chunkWithContent(chunk, content, isCompletion) {
   const choice = chunk.choices[0];
   if (isCompletion) {
@@ -1650,10 +1877,44 @@ function chunkWithContent(chunk, content, isCompletion) {
   };
 }
 __name(chunkWithContent, "chunkWithContent");
+function chunkGraphemes(graphemes, size) {
+  const chunks = [];
+  for (let index = 0; index < graphemes.length; index += size) {
+    chunks.push(graphemes.slice(index, index + size).join(""));
+  }
+  return chunks;
+}
+__name(chunkGraphemes, "chunkGraphemes");
+function isLikelyStructuredText(text) {
+  const value = String(text || "");
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/^(```|~~~)/.test(trimmed)) return true;
+  if (/^[\[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) return true;
+  if (/^\s*(const|let|var|function|class|import|export|if|for|while|return)\b/m.test(value)) return true;
+  const lines = value.split(/\r\n|\n|\r/).filter((line) => line.trim());
+  if (lines.length < 3) return false;
+  if (lines.some((line) => /\|/.test(line)) && lines.some((line) => /^\s*\|?\s*:?-{3,}:?\s*\|/.test(line))) {
+    return true;
+  }
+  const listLines = lines.filter((line) => /^\s*(?:[-*+]|\d+[.)])\s+/.test(line)).length;
+  if (listLines >= Math.min(3, lines.length)) return true;
+  const codeLikeLines = lines.filter((line) => /^\s{2,}\S/.test(line) || /[{};=<>]/.test(line)).length;
+  return codeLikeLines >= 2;
+}
+__name(isLikelyStructuredText, "isLikelyStructuredText");
 function splitChunk(chunk) {
+  if (hasNonTextPayload(chunk)) return { kind: "raw", pieces: [chunk] };
   const { content, isCompletion } = contentFromChunk(chunk);
-  if (!content) return [chunk];
-  return splitTextByCodePoint(content).map((char) => chunkWithContent(chunk, char, isCompletion));
+  if (!content) return { kind: "raw", pieces: [chunk] };
+  const graphemes = splitTextByCodePoint(content);
+  if (graphemes.length <= 1) return { kind: "natural", pieces: [chunk] };
+  const isStructured = isLikelyStructuredText(content);
+  const textPieces = isStructured ? chunkGraphemes(graphemes, graphemes.length > 240 ? STRUCTURED_LARGE_UNIT_SIZE : STRUCTURED_UNIT_SIZE) : graphemes;
+  return {
+    kind: isStructured ? "structured" : "natural",
+    pieces: textPieces.map((piece) => chunkWithContent(chunk, piece, isCompletion))
+  };
 }
 __name(splitChunk, "splitChunk");
 function hasFinishReason(chunk) {
@@ -1690,48 +1951,63 @@ function takeCompleteLines(buffer, flush = false) {
   return { lines, buffer: buffer.slice(start) };
 }
 __name(takeCompleteLines, "takeCompleteLines");
-function calculateAdaptiveDelay(chunkSize, timeSinceLastChunk, config, isStreamEnding) {
-  const minDelay = Math.max(0, numberOrDefault(config.minDelay, 5));
-  const maxDelay = Math.max(minDelay, numberOrDefault(config.maxDelay, 40));
-  const finalLowDelay = Math.max(0, numberOrDefault(config.finalLowDelay, minDelay));
-  if (isStreamEnding) return finalLowDelay;
-  if (chunkSize <= 0) return minDelay;
-  const adaptiveDelayFactor = Math.max(0, Math.min(2, numberOrDefault(config.adaptiveDelayFactor, 0.5)));
-  const sizeInverseFactor = 1 + Math.log(1 + Math.min(chunkSize, 200)) / Math.log(20);
-  const normalizedSizeFactor = 1 / Math.max(0.5, Math.min(2, sizeInverseFactor));
-  const normalizedTime = Math.min(2e3, Math.max(50, timeSinceLastChunk));
-  const timeFactor = Math.sqrt(normalizedTime / 300);
-  const adaptiveDelay = minDelay + (maxDelay - minDelay) * normalizedSizeFactor * timeFactor * adaptiveDelayFactor;
-  return Math.min(maxDelay, Math.max(minDelay, adaptiveDelay));
-}
-__name(calculateAdaptiveDelay, "calculateAdaptiveDelay");
-function updateStreamDelayState(state, chunkSize, config, now) {
-  const chunkBufferSize = Math.max(1, numberOrDefault(config.chunkBufferSize, 10));
-  const threshold = Math.max(0, numberOrDefault(config.minContentLengthForFastOutput, 0));
-  const fastOutputDelay = Math.max(0, numberOrDefault(config.fastOutputDelay, state.currentDelay));
-  const currentTime = now();
-  const timeSinceLastChunk = Math.max(0, currentTime - state.lastChunkTime);
-  state.lastChunkTime = currentTime;
-  state.recentChunkSizes.push(chunkSize);
-  if (state.recentChunkSizes.length > chunkBufferSize) state.recentChunkSizes.shift();
-  state.maxSingleChunkSize = Math.max(state.maxSingleChunkSize, chunkSize);
-  if (threshold && state.maxSingleChunkSize > threshold) state.fastOutputMode = true;
-  if (state.fastOutputMode) {
-    state.currentDelay = fastOutputDelay;
-    return;
+var AdaptiveStreamPacer = class {
+  static {
+    __name(this, "AdaptiveStreamPacer");
   }
-  const averageChunkSize = state.recentChunkSizes.reduce((sum, size) => sum + size, 0) / state.recentChunkSizes.length;
-  state.currentDelay = calculateAdaptiveDelay(averageChunkSize, timeSinceLastChunk, config, state.isStreamEnding);
-}
-__name(updateStreamDelayState, "updateStreamDelayState");
+  constructor(now) {
+    this.now = now;
+    this.lastUpstreamTime = null;
+    this.recentUpstreamIntervals = [];
+    this.recentUpstreamBytes = [];
+    this.outputUnits = 0;
+    this.isEnding = false;
+  }
+  observeUpstreamChunk(byteLength) {
+    const currentTime = this.now();
+    if (this.lastUpstreamTime !== null) {
+      pushRecent(this.recentUpstreamIntervals, Math.max(0, currentTime - this.lastUpstreamTime));
+    }
+    this.lastUpstreamTime = currentTime;
+    pushRecent(this.recentUpstreamBytes, Math.max(0, byteLength));
+  }
+  markEnding() {
+    this.isEnding = true;
+  }
+  delayFor({ kind, remaining }) {
+    if (this.isEnding || remaining <= 0) {
+      this.outputUnits++;
+      return 0;
+    }
+    let delay = 0;
+    if (kind === "structured") {
+      delay = remaining > 8 ? 0 : 1;
+    } else if (this.outputUnits < NATURAL_FIRST_FAST_UNITS) {
+      delay = remaining > 24 ? 1 : 0;
+    } else if (remaining > NATURAL_BACKLOG_DRAIN_THRESHOLD) {
+      delay = 0;
+    } else if (remaining > NATURAL_BACKLOG_FAST_THRESHOLD) {
+      delay = 1;
+    } else {
+      const upstreamBytes = average(this.recentUpstreamBytes);
+      const upstreamInterval = average(this.recentUpstreamIntervals);
+      if (upstreamBytes <= 128 && upstreamInterval >= 15) delay = 0;
+      else if (upstreamBytes > 2048) delay = 2;
+      else if (upstreamBytes > 512) delay = 3;
+      else delay = 4;
+    }
+    this.outputUnits++;
+    return delay;
+  }
+};
 function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now = /* @__PURE__ */ __name(() => Date.now(), "now") }) {
-  const minDelay = Math.max(0, numberOrDefault(config.minDelay, 0));
-  const finalLowDelay = Math.max(0, numberOrDefault(config.finalLowDelay, minDelay));
+  void config;
   async function processLine(line, state, writer = null) {
     const trimmed = line.trim();
     if (!trimmed) return "";
     if (sseDataFromLine4(trimmed) === "[DONE]") {
       state.done = true;
+      state.pacer.markEnding();
       if (state.doneEmitted) return "";
       state.doneEmitted = true;
       return writeEvent("data: [DONE]\n\n", writer);
@@ -1747,14 +2023,18 @@ function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now
     let output = "";
     for (const chunk of chunks) {
       const isFinishChunk = hasFinishReason(chunk);
-      if (isFinishChunk) state.isStreamEnding = true;
-      const pieces = isFinishChunk ? [chunk] : splitChunk(chunk);
+      if (isFinishChunk) {
+        state.isStreamEnding = true;
+        state.pacer.markEnding();
+      }
+      const { kind, pieces } = isFinishChunk ? { kind: "raw", pieces: [chunk] } : splitChunk(chunk);
       for (let i = 0; i < pieces.length; i++) {
         const event = eventForChunk(pieces[i]);
         if (writer) await writer.write(encoder3.encode(event));
         output += event;
-        const delay = isFinishChunk ? finalLowDelay : state.currentDelay ?? minDelay;
-        if (writer && delay > 0 && (i < pieces.length - 1 || isFinishChunk)) await sleep(delay);
+        const remaining = pieces.length - i - 1;
+        const delay = state.pacer.delayFor({ kind, remaining });
+        if (writer && delay > 0 && remaining > 0) await sleep(delay);
       }
       if (isFinishChunk) state.done = true;
     }
@@ -1762,7 +2042,12 @@ function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now
   }
   __name(processLine, "processLine");
   async function transformText(text) {
-    const state = { done: false, doneEmitted: false };
+    const state = {
+      done: false,
+      doneEmitted: false,
+      isStreamEnding: false,
+      pacer: new AdaptiveStreamPacer(now)
+    };
     const lines = splitLines(text);
     let output = "";
     for (const line of lines) {
@@ -1777,11 +2062,7 @@ function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now
       done: false,
       doneEmitted: false,
       isStreamEnding: false,
-      currentDelay: minDelay,
-      fastOutputMode: false,
-      lastChunkTime: now(),
-      maxSingleChunkSize: 0,
-      recentChunkSizes: []
+      pacer: new AdaptiveStreamPacer(now)
     };
     return new ReadableStream({
       async start(controller) {
@@ -1797,15 +2078,15 @@ function createSSETransformer({ provider, config = {}, sleep = defaultSleep, now
           while (true) {
             const { value, done } = await reader.read();
             if (done) break;
-            updateStreamDelayState(state, value.length, config, now);
+            state.pacer.observeUpstreamChunk(value.length);
             buffer += decoder2.decode(value, { stream: true });
             const result2 = takeCompleteLines(buffer);
             buffer = result2.buffer;
-            const { lines } = result2;
-            for (const line of lines) {
+            for (const line of result2.lines) {
               await processLine(line, state, writer);
             }
           }
+          state.pacer.markEnding();
           buffer += decoder2.decode();
           const result = takeCompleteLines(buffer, true);
           buffer = result.buffer;
@@ -1864,7 +2145,7 @@ function modelNameFromResponse(response, fallback) {
 __name(modelNameFromResponse, "modelNameFromResponse");
 function streamResponse(upstreamResponse, provider, config, requestBody) {
   const modelName = modelNameFromResponse(upstreamResponse, requestBody.model);
-  if (shouldDisableOptimization(modelName, config.disableOptimizationModels)) {
+  if (!shouldOptimizeModel(modelName, config.streamOptimizationModels)) {
     return addCorsHeaders(upstreamResponse);
   }
   const transformer = createSSETransformer({ provider, config });

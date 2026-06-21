@@ -139,16 +139,8 @@ export function serveDashboardPage() {
       </section>
       <section>
         <h2>Stream optimizer</h2>
-        <div class="grid">
-          <div><label for="minDelay">Min delay</label><input id="minDelay" type="number" min="0"></div>
-          <div><label for="maxDelay">Max delay</label><input id="maxDelay" type="number" min="0"></div>
-          <div><label for="adaptiveDelayFactor">Adaptive delay factor</label><input id="adaptiveDelayFactor" type="number" step="0.1" min="0"></div>
-          <div><label for="chunkBufferSize">Chunk buffer size</label><input id="chunkBufferSize" type="number" min="1"></div>
-          <div><label for="minContentLengthForFastOutput">Fast output threshold</label><input id="minContentLengthForFastOutput" type="number" min="0"></div>
-          <div><label for="fastOutputDelay">Fast output delay</label><input id="fastOutputDelay" type="number" min="0"></div>
-          <div><label for="finalLowDelay">Final low delay</label><input id="finalLowDelay" type="number" min="0"></div>
-          <div><label for="disableOptimizationModels">Disable optimization models</label><input id="disableOptimizationModels" placeholder="gpt-4o, claude-3"></div>
-        </div>
+        <label for="streamOptimizationModels">Optimized model whitelist</label>
+        <input id="streamOptimizationModels" placeholder="gpt-4o, claude-3-5-sonnet-20241022">
       </section>
       <div class="actions">
         <span id="message" role="status"></span>
@@ -159,9 +151,7 @@ export function serveDashboardPage() {
   <script>
     const ids = [
       'defaultUpstreamUrl','defaultOutgoingApiKey','geminiUpstreamUrl','geminiApiKey',
-      'anthropicUpstreamUrl','anthropicApiKey','proxyApiKey','minDelay','maxDelay',
-      'adaptiveDelayFactor','chunkBufferSize','minContentLengthForFastOutput','fastOutputDelay',
-      'finalLowDelay','disableOptimizationModels'
+      'anthropicUpstreamUrl','anthropicApiKey','proxyApiKey','streamOptimizationModels'
     ];
     const byId = id => document.getElementById(id);
     const message = byId('message');
@@ -172,7 +162,7 @@ export function serveDashboardPage() {
       const data = await response.json();
       const config = data.config || {};
       for (const id of ids) {
-        if (id === 'disableOptimizationModels') setValue(id, (config.disableOptimizationModels || []).join(', '));
+        if (id === 'streamOptimizationModels') setValue(id, (config.streamOptimizationModels || []).join(', '));
         else setValue(id, config[id]);
       }
       byId('geminiUseNativeFetch').checked = config.geminiUseNativeFetch === true;
@@ -194,14 +184,7 @@ export function serveDashboardPage() {
         anthropicApiKey: byId('anthropicApiKey').value.trim(),
         anthropicUseNativeFetch: byId('anthropicUseNativeFetch').checked,
         proxyApiKey: byId('proxyApiKey').value.trim(),
-        minDelay: byId('minDelay').value,
-        maxDelay: byId('maxDelay').value,
-        adaptiveDelayFactor: byId('adaptiveDelayFactor').value,
-        chunkBufferSize: byId('chunkBufferSize').value,
-        minContentLengthForFastOutput: byId('minContentLengthForFastOutput').value,
-        fastOutputDelay: byId('fastOutputDelay').value,
-        finalLowDelay: byId('finalLowDelay').value,
-        disableOptimizationModels: byId('disableOptimizationModels').value.split(',').map(x => x.trim()).filter(Boolean)
+        streamOptimizationModels: byId('streamOptimizationModels').value.split(',').map(x => x.trim()).filter(Boolean)
       };
     }
     byId('config-form').addEventListener('submit', async event => {

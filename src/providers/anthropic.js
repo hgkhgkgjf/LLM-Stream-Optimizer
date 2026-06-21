@@ -18,7 +18,17 @@ function normalizeFinishReason(reason) {
   return FINISH_REASONS[reason] || reason || "stop";
 }
 
-function openAICompletionChunk({ model = "claude-3", content = "", finishReason = null }) {
+function openAICompletionChunk({
+  model = "claude-3",
+  content = "",
+  reasoningContent = "",
+  reasoningSignature = "",
+  finishReason = null,
+}) {
+  const delta = {};
+  if (reasoningContent) delta.reasoning_content = reasoningContent;
+  if (reasoningSignature) delta.reasoning_signature = reasoningSignature;
+  if (content) delta.content = content;
   return {
     id: `anthropic-${Date.now()}`,
     object: "chat.completion.chunk",
@@ -27,11 +37,62 @@ function openAICompletionChunk({ model = "claude-3", content = "", finishReason 
     choices: [
       {
         index: 0,
-        delta: content ? { content } : {},
+        delta,
         finish_reason: finishReason,
       },
     ],
   };
+}
+
+function firstObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value));
+}
+
+function textFromMessageContent(content) {
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+  }
+  return String(content || "");
+}
+
+function thinkingConfigFromRequest(requestBody = {}) {
+  const extraBody = firstObject(requestBody.extra_body, requestBody.extraBody);
+  const nestedExtraBody = firstObject(extraBody?.extra_body, extraBody?.extraBody);
+  const anthropic = firstObject(extraBody?.anthropic, nestedExtraBody?.anthropic);
+  return firstObject(requestBody.thinking, anthropic?.thinking, extraBody?.thinking, nestedExtraBody?.thinking);
+}
+
+function createMessagesRequestBody(requestBody, thinking) {
+  const messages = [];
+  const systemMessages = [];
+  for (const message of requestBody.messages || []) {
+    const content = textFromMessageContent(message.content);
+    if (message.role === "system") {
+      if (content) systemMessages.push(content);
+      continue;
+    }
+    messages.push({
+      role: message.role === "assistant" ? "assistant" : "user",
+      content,
+    });
+  }
+  if (messages.length === 0) messages.push({ role: "user", content: "Hello" });
+
+  const body = {
+    model: String(requestBody.model || ""),
+    messages,
+    max_tokens: requestBody.max_tokens || 4000,
+    stream: requestBody.stream,
+  };
+  if (systemMessages.length) body.system = systemMessages.join("\n\n");
+  if (thinking) body.thinking = thinking;
+  if (requestBody.temperature !== undefined) body.temperature = requestBody.temperature;
+  if (requestBody.top_p !== undefined) body.top_p = requestBody.top_p;
+  if (requestBody.stop !== undefined) body.stop_sequences = Array.isArray(requestBody.stop) ? requestBody.stop : [requestBody.stop];
+  return body;
 }
 
 export const anthropicProvider = {
@@ -43,8 +104,22 @@ export const anthropicProvider = {
 
   createRequest({ request, requestBody, config }) {
     const apiKey = request.headers.get("X-Anthropic-API-Key") || selectWeightedKey(config.anthropicApiKey);
+    const thinking = thinkingConfigFromRequest(requestBody);
+    if (thinking) {
+      return {
+        method: "POST",
+        headers: new Headers({
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify(createMessagesRequestBody(requestBody, thinking)),
+        url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/messages"),
+        useNativeFetch: config.anthropicUseNativeFetch,
+      };
+    }
     const prompt = (requestBody.messages || [])
-      .map((message) => `${message.role === "assistant" ? "Assistant" : "Human"}: ${message.content || ""}`)
+      .map((message) => `${message.role === "assistant" ? "Assistant" : "Human"}: ${textFromMessageContent(message.content)}`)
       .join("\n\n");
     return {
       method: "POST",
@@ -68,16 +143,24 @@ export const anthropicProvider = {
   convertResponseBody(body) {
     if (body.error) return body;
     let content = "";
+    let reasoningContent = "";
+    let reasoningSignature = "";
     if (Array.isArray(body.content)) {
-      content = body.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text || "")
-        .join("");
+      for (const block of body.content) {
+        if (block?.type === "text") content += block.text || "";
+        if (block?.type === "thinking") {
+          reasoningContent += block.thinking || block.text || "";
+          if (block.signature) reasoningSignature += String(block.signature);
+        }
+      }
     } else {
       content = body.completion || body.text || "";
     }
     const promptTokens = body.usage?.input_tokens || 0;
     const completionTokens = body.usage?.output_tokens || 0;
+    const message = { role: "assistant", content };
+    if (reasoningContent) message.reasoning_content = reasoningContent;
+    if (reasoningSignature) message.reasoning_signature = reasoningSignature;
     return {
       id: `anthropic-${Date.now()}`,
       object: "chat.completion",
@@ -86,7 +169,7 @@ export const anthropicProvider = {
       choices: [
         {
           index: 0,
-          message: { role: "assistant", content },
+          message,
           finish_reason: normalizeFinishReason(body.stop_reason),
         },
       ],
@@ -104,8 +187,16 @@ export const anthropicProvider = {
     if (!data || data === "[DONE]") return [];
     const body = JSON.parse(data);
     if (body.error) return [body];
-    if (body.type === "content_block_delta" && body.delta?.text) {
-      return [openAICompletionChunk({ content: body.delta.text })];
+    if (body.type === "content_block_delta") {
+      if (body.delta?.thinking) {
+        return [openAICompletionChunk({ reasoningContent: body.delta.thinking })];
+      }
+      if (body.delta?.signature) {
+        return [openAICompletionChunk({ reasoningSignature: body.delta.signature })];
+      }
+      if (body.delta?.text) {
+        return [openAICompletionChunk({ content: body.delta.text })];
+      }
     }
     if (body.type === "completion") {
       const chunks = [];
