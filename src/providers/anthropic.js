@@ -1,5 +1,5 @@
 import { DEFAULT_ANTHROPIC_URL } from "../constants.js";
-import { joinUrl } from "../http.js";
+import { joinUrl, messageContentHasImage, parseImageUrl, textFromMessageContent } from "../http.js";
 import { selectWeightedKey } from "../routing.js";
 
 const FINISH_REASONS = {
@@ -48,16 +48,6 @@ function firstObject(...values) {
   return values.find((value) => value && typeof value === "object" && !Array.isArray(value));
 }
 
-function textFromMessageContent(content) {
-  if (Array.isArray(content)) {
-    return content
-      .filter((part) => part && typeof part.text === "string")
-      .map((part) => part.text)
-      .join("");
-  }
-  return String(content || "");
-}
-
 function thinkingConfigFromRequest(requestBody = {}) {
   const extraBody = firstObject(requestBody.extra_body, requestBody.extraBody);
   const nestedExtraBody = firstObject(extraBody?.extra_body, extraBody?.extraBody);
@@ -65,19 +55,58 @@ function thinkingConfigFromRequest(requestBody = {}) {
   return firstObject(requestBody.thinking, anthropic?.thinking, extraBody?.thinking, nestedExtraBody?.thinking);
 }
 
+// Converts OpenAI-style message content into Anthropic content blocks, mapping
+// image parts to `base64` (data URIs) or `url` image sources. Adjacent text
+// segments are merged into a single text block.
+function contentBlocksFromMessageContent(content) {
+  const blocks = [];
+  let text = "";
+  const flushText = () => {
+    if (text) {
+      blocks.push({ type: "text", text });
+      text = "";
+    }
+  };
+  for (const part of content) {
+    if (!part) continue;
+    if (typeof part.text === "string") {
+      text += part.text;
+      continue;
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      const image = parseImageUrl(part.image_url);
+      if (!image) continue;
+      flushText();
+      if (image.kind === "base64") {
+        blocks.push({
+          type: "image",
+          source: { type: "base64", media_type: image.mediaType, data: image.data },
+        });
+      } else {
+        blocks.push({ type: "image", source: { type: "url", url: image.url } });
+      }
+    }
+  }
+  flushText();
+  return blocks;
+}
+
 function createMessagesRequestBody(requestBody, thinking) {
   const messages = [];
   const systemMessages = [];
   for (const message of requestBody.messages || []) {
-    const content = textFromMessageContent(message.content);
     if (message.role === "system") {
+      const content = textFromMessageContent(message.content);
       if (content) systemMessages.push(content);
       continue;
     }
-    messages.push({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content,
-    });
+    const role = message.role === "assistant" ? "assistant" : "user";
+    if (messageContentHasImage(message.content)) {
+      const blocks = contentBlocksFromMessageContent(message.content);
+      messages.push({ role, content: blocks.length ? blocks : "" });
+    } else {
+      messages.push({ role, content: textFromMessageContent(message.content) });
+    }
   }
   if (messages.length === 0) messages.push({ role: "user", content: "Hello" });
 
@@ -105,22 +134,6 @@ export const anthropicProvider = {
   createRequest({ request, requestBody, config }) {
     const apiKey = request.headers.get("X-Anthropic-API-Key") || selectWeightedKey(config.anthropicApiKey);
     const thinking = thinkingConfigFromRequest(requestBody);
-    if (thinking) {
-      return {
-        method: "POST",
-        headers: new Headers({
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json",
-        }),
-        body: JSON.stringify(createMessagesRequestBody(requestBody, thinking)),
-        url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/messages"),
-        useNativeFetch: config.anthropicUseNativeFetch,
-      };
-    }
-    const prompt = (requestBody.messages || [])
-      .map((message) => `${message.role === "assistant" ? "Assistant" : "Human"}: ${textFromMessageContent(message.content)}`)
-      .join("\n\n");
     return {
       method: "POST",
       headers: new Headers({
@@ -128,14 +141,8 @@ export const anthropicProvider = {
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
       }),
-      body: JSON.stringify({
-        model: String(requestBody.model || ""),
-        prompt: `\n\n${prompt}\n\nAssistant:`,
-        max_tokens_to_sample: requestBody.max_tokens || 4000,
-        temperature: requestBody.temperature || 0.7,
-        stream: requestBody.stream,
-      }),
-      url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/complete"),
+      body: JSON.stringify(createMessagesRequestBody(requestBody, thinking)),
+      url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/messages"),
       useNativeFetch: config.anthropicUseNativeFetch,
     };
   },

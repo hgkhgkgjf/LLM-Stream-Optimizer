@@ -5,6 +5,10 @@ import { anthropicProvider } from "../src/providers/anthropic.js";
 import { geminiProvider } from "../src/providers/gemini.js";
 import { selectProvider } from "../src/providers/index.js";
 import { openAIProvider } from "../src/providers/openai.js";
+import { messageContentHasImage, parseImageUrl } from "../src/http.js";
+
+const PNG_DATA_URI =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMCAQDQzNHvAAAAAElFTkSuQmCC";
 
 test("Gemini non-stream response converts to OpenAI chat completion format", () => {
   const converted = geminiProvider.convertResponseBody({
@@ -271,6 +275,189 @@ test("Gemini stream errors pass through as error objects", () => {
   );
 
   assert.deepEqual(chunks, [{ error: { message: "quota exceeded", code: 429 } }]);
+});
+
+test("Gemini request construction joins array-form content into text", () => {
+  const upstreamRequest = geminiProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "gemini-2.5-flash",
+      messages: [
+        { role: "system", content: [{ type: "text", text: "Be concise." }] },
+        { role: "user", content: [{ type: "text", text: "Hello " }, { type: "text", text: "world" }] },
+        { role: "assistant", content: "Hi there" },
+        { role: "user", content: "Follow up" },
+      ],
+    },
+    config: {
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.equal(body.systemInstruction.parts[0].text, "Be concise.");
+  assert.deepEqual(
+    body.contents.map((entry) => ({ role: entry.role, text: entry.parts[0].text })),
+    [
+      { role: "user", text: "Hello world" },
+      { role: "model", text: "Hi there" },
+      { role: "user", text: "Follow up" },
+    ],
+  );
+});
+
+test("parseImageUrl decodes base64 data URIs", () => {
+  const parsed = parseImageUrl(PNG_DATA_URI);
+  assert.equal(parsed.kind, "base64");
+  assert.equal(parsed.mediaType, "image/png");
+  assert.ok(parsed.data.startsWith("iVBORw0KGgo"));
+});
+
+test("parseImageUrl treats remote links as urls and guesses media type", () => {
+  const parsed = parseImageUrl({ url: "https://cdn.example/photo.JPG?token=1" });
+  assert.deepEqual(parsed, {
+    kind: "url",
+    url: "https://cdn.example/photo.JPG?token=1",
+    mediaType: "image/jpeg",
+  });
+});
+
+test("messageContentHasImage detects image parts only", () => {
+  assert.equal(messageContentHasImage("plain text"), false);
+  assert.equal(messageContentHasImage([{ type: "text", text: "hi" }]), false);
+  assert.equal(
+    messageContentHasImage([
+      { type: "text", text: "hi" },
+      { type: "image_url", image_url: { url: PNG_DATA_URI } },
+    ]),
+    true,
+  );
+});
+
+test("Gemini request construction maps inline image data to inlineData parts", () => {
+  const upstreamRequest = geminiProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "gemini-2.5-flash",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this image?" },
+            { type: "image_url", image_url: { url: PNG_DATA_URI } },
+          ],
+        },
+      ],
+    },
+    config: {
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.deepEqual(body.contents[0].parts[0], { text: "What is in this image?" });
+  assert.equal(body.contents[0].parts[1].inlineData.mimeType, "image/png");
+  assert.ok(body.contents[0].parts[1].inlineData.data.startsWith("iVBORw0KGgo"));
+});
+
+test("Gemini request construction maps remote image links to fileData parts", () => {
+  const upstreamRequest = geminiProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "gemini-2.5-flash",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "https://cdn.example/cat.png" } }],
+        },
+      ],
+    },
+    config: {
+      geminiApiKey: "gemini-test",
+      geminiUpstreamUrl: "https://generativelanguage.googleapis.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.deepEqual(body.contents[0].parts[0], {
+    fileData: { mimeType: "image/png", fileUri: "https://cdn.example/cat.png" },
+  });
+});
+
+test("Anthropic request construction maps inline image data to base64 image blocks", () => {
+  const upstreamRequest = anthropicProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Describe this." },
+            { type: "image_url", image_url: { url: PNG_DATA_URI } },
+          ],
+        },
+      ],
+    },
+    config: {
+      anthropicApiKey: "sk-ant-test",
+      anthropicUpstreamUrl: "https://api.anthropic.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.match(upstreamRequest.url, /\/v1\/messages$/);
+  assert.equal(body.messages[0].content[0].type, "text");
+  assert.equal(body.messages[0].content[1].type, "image");
+  assert.equal(body.messages[0].content[1].source.type, "base64");
+  assert.equal(body.messages[0].content[1].source.media_type, "image/png");
+  assert.ok(body.messages[0].content[1].source.data.startsWith("iVBORw0KGgo"));
+});
+
+test("Anthropic request construction maps remote image links to url image blocks", () => {
+  const upstreamRequest = anthropicProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image_url", image_url: { url: "https://cdn.example/cat.webp" } }],
+        },
+      ],
+    },
+    config: {
+      anthropicApiKey: "sk-ant-test",
+      anthropicUpstreamUrl: "https://api.anthropic.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.deepEqual(body.messages[0].content[0], {
+    type: "image",
+    source: { type: "url", url: "https://cdn.example/cat.webp" },
+  });
+});
+
+test("Anthropic request construction uses the messages API for plain text requests", () => {
+  const upstreamRequest = anthropicProvider.createRequest({
+    request: new Request("https://proxy.example/v1/chat/completions"),
+    requestBody: {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [{ role: "user", content: "Hello" }],
+      stream: false,
+    },
+    config: {
+      anthropicApiKey: "sk-ant-test",
+      anthropicUpstreamUrl: "https://api.anthropic.com",
+    },
+  });
+  const body = JSON.parse(upstreamRequest.body);
+
+  assert.match(upstreamRequest.url, /\/v1\/messages$/);
+  assert.deepEqual(body.messages, [{ role: "user", content: "Hello" }]);
 });
 
 test("selectProvider defaults to OpenAI when config is omitted", () => {

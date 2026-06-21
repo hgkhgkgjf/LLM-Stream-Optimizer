@@ -379,6 +379,51 @@ function joinUrl(baseUrl, path) {
   return `${stripTrailingSlash(baseUrl)}${path.startsWith("/") ? path : `/${path}`}`;
 }
 __name(joinUrl, "joinUrl");
+function textFromMessageContent(content) {
+  if (Array.isArray(content)) {
+    return content.filter((part) => part && typeof part.text === "string").map((part) => part.text).join("");
+  }
+  return String(content || "");
+}
+__name(textFromMessageContent, "textFromMessageContent");
+var IMAGE_EXTENSION_MEDIA_TYPES = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif"
+};
+function mediaTypeFromUrl(url) {
+  const match = String(url).split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i);
+  const ext = match ? match[1].toLowerCase() : "";
+  return IMAGE_EXTENSION_MEDIA_TYPES[ext] || "image/jpeg";
+}
+__name(mediaTypeFromUrl, "mediaTypeFromUrl");
+function isImageContentPart(part) {
+  if (!part || typeof part !== "object") return false;
+  return part.type === "image_url" || part.type === "input_image" || part.type === "image";
+}
+__name(isImageContentPart, "isImageContentPart");
+function messageContentHasImage(content) {
+  return Array.isArray(content) && content.some(isImageContentPart);
+}
+__name(messageContentHasImage, "messageContentHasImage");
+function parseImageUrl(imageUrl) {
+  const url = typeof imageUrl === "string" ? imageUrl : imageUrl && typeof imageUrl === "object" ? imageUrl.url : "";
+  if (!url || typeof url !== "string") return null;
+  const dataUri = url.match(/^data:([^;,]*?)(;base64)?,([\s\S]*)$/);
+  if (dataUri) {
+    return {
+      kind: "base64",
+      mediaType: dataUri[1] || "image/jpeg",
+      data: dataUri[3] || ""
+    };
+  }
+  return { kind: "url", url, mediaType: mediaTypeFromUrl(url) };
+}
+__name(parseImageUrl, "parseImageUrl");
 function copyForwardHeaders(originalHeaders, blocked = []) {
   const headers = new Headers();
   const blockedSet = /* @__PURE__ */ new Set([
@@ -2100,13 +2145,6 @@ function firstObject(...values) {
   return values.find((value) => value && typeof value === "object" && !Array.isArray(value));
 }
 __name(firstObject, "firstObject");
-function textFromMessageContent(content) {
-  if (Array.isArray(content)) {
-    return content.filter((part) => part && typeof part.text === "string").map((part) => part.text).join("");
-  }
-  return String(content || "");
-}
-__name(textFromMessageContent, "textFromMessageContent");
 function thinkingConfigFromRequest(requestBody = {}) {
   const extraBody = firstObject(requestBody.extra_body, requestBody.extraBody);
   const nestedExtraBody = firstObject(extraBody?.extra_body, extraBody?.extraBody);
@@ -2114,19 +2152,55 @@ function thinkingConfigFromRequest(requestBody = {}) {
   return firstObject(requestBody.thinking, anthropic?.thinking, extraBody?.thinking, nestedExtraBody?.thinking);
 }
 __name(thinkingConfigFromRequest, "thinkingConfigFromRequest");
+function contentBlocksFromMessageContent(content) {
+  const blocks = [];
+  let text = "";
+  const flushText = /* @__PURE__ */ __name(() => {
+    if (text) {
+      blocks.push({ type: "text", text });
+      text = "";
+    }
+  }, "flushText");
+  for (const part of content) {
+    if (!part) continue;
+    if (typeof part.text === "string") {
+      text += part.text;
+      continue;
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      const image = parseImageUrl(part.image_url);
+      if (!image) continue;
+      flushText();
+      if (image.kind === "base64") {
+        blocks.push({
+          type: "image",
+          source: { type: "base64", media_type: image.mediaType, data: image.data }
+        });
+      } else {
+        blocks.push({ type: "image", source: { type: "url", url: image.url } });
+      }
+    }
+  }
+  flushText();
+  return blocks;
+}
+__name(contentBlocksFromMessageContent, "contentBlocksFromMessageContent");
 function createMessagesRequestBody(requestBody, thinking) {
   const messages = [];
   const systemMessages = [];
   for (const message of requestBody.messages || []) {
-    const content = textFromMessageContent(message.content);
     if (message.role === "system") {
+      const content = textFromMessageContent(message.content);
       if (content) systemMessages.push(content);
       continue;
     }
-    messages.push({
-      role: message.role === "assistant" ? "assistant" : "user",
-      content
-    });
+    const role = message.role === "assistant" ? "assistant" : "user";
+    if (messageContentHasImage(message.content)) {
+      const blocks = contentBlocksFromMessageContent(message.content);
+      messages.push({ role, content: blocks.length ? blocks : "" });
+    } else {
+      messages.push({ role, content: textFromMessageContent(message.content) });
+    }
   }
   if (messages.length === 0) messages.push({ role: "user", content: "Hello" });
   const body = {
@@ -2151,20 +2225,6 @@ var anthropicProvider = {
   createRequest({ request, requestBody, config }) {
     const apiKey = request.headers.get("X-Anthropic-API-Key") || selectWeightedKey(config.anthropicApiKey);
     const thinking = thinkingConfigFromRequest(requestBody);
-    if (thinking) {
-      return {
-        method: "POST",
-        headers: new Headers({
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json"
-        }),
-        body: JSON.stringify(createMessagesRequestBody(requestBody, thinking)),
-        url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/messages"),
-        useNativeFetch: config.anthropicUseNativeFetch
-      };
-    }
-    const prompt = (requestBody.messages || []).map((message) => `${message.role === "assistant" ? "Assistant" : "Human"}: ${textFromMessageContent(message.content)}`).join("\n\n");
     return {
       method: "POST",
       headers: new Headers({
@@ -2172,18 +2232,8 @@ var anthropicProvider = {
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json"
       }),
-      body: JSON.stringify({
-        model: String(requestBody.model || ""),
-        prompt: `
-
-${prompt}
-
-Assistant:`,
-        max_tokens_to_sample: requestBody.max_tokens || 4e3,
-        temperature: requestBody.temperature || 0.7,
-        stream: requestBody.stream
-      }),
-      url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/complete"),
+      body: JSON.stringify(createMessagesRequestBody(requestBody, thinking)),
+      url: joinUrl(config.anthropicUpstreamUrl || DEFAULT_ANTHROPIC_URL, "/v1/messages"),
       useNativeFetch: config.anthropicUseNativeFetch
     };
   },
@@ -2300,6 +2350,40 @@ function normalizeGeminiModel(modelName = "gemini-pro") {
   return model2;
 }
 __name(normalizeGeminiModel, "normalizeGeminiModel");
+function partsFromMessageContent(content) {
+  if (!Array.isArray(content)) {
+    return [{ text: String(content || "") }];
+  }
+  const parts = [];
+  let text = "";
+  const flushText = /* @__PURE__ */ __name(() => {
+    if (text) {
+      parts.push({ text });
+      text = "";
+    }
+  }, "flushText");
+  for (const part of content) {
+    if (!part) continue;
+    if (typeof part.text === "string") {
+      text += part.text;
+      continue;
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      const image = parseImageUrl(part.image_url);
+      if (!image) continue;
+      flushText();
+      if (image.kind === "base64") {
+        parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } });
+      } else {
+        parts.push({ fileData: { mimeType: image.mediaType, fileUri: image.url } });
+      }
+    }
+  }
+  flushText();
+  if (parts.length === 0) parts.push({ text: "" });
+  return parts;
+}
+__name(partsFromMessageContent, "partsFromMessageContent");
 function openAICompletionChunk2({
   model: model2,
   index = 0,
@@ -2433,11 +2517,11 @@ var geminiProvider = {
     const contents = [];
     for (const message of requestBody.messages || []) {
       if (message.role === "system") {
-        systemInstruction = { parts: [{ text: String(message.content || "") }] };
+        systemInstruction = { parts: [{ text: textFromMessageContent(message.content) }] };
       } else {
         contents.push({
           role: message.role === "assistant" ? "model" : "user",
-          parts: [{ text: String(message.content || "") }]
+          parts: partsFromMessageContent(message.content)
         });
       }
     }

@@ -1,5 +1,5 @@
 import { DEFAULT_GEMINI_URL } from "../constants.js";
-import { joinUrl } from "../http.js";
+import { joinUrl, parseImageUrl, textFromMessageContent } from "../http.js";
 import { selectWeightedKey } from "../routing.js";
 
 const FINISH_REASONS = {
@@ -38,6 +38,43 @@ function normalizeGeminiModel(modelName = "gemini-pro") {
   if (!model.startsWith("gemini-") && !model.startsWith("models/")) model = `gemini-${model}`;
   if (!model.startsWith("models/")) model = `models/${model}`;
   return model;
+}
+
+// Converts OpenAI-style message content into Gemini `parts`, mapping image
+// parts to `inlineData` (data URIs) or `fileData` (remote URLs). Adjacent text
+// segments are merged so plain-text messages stay a single part.
+function partsFromMessageContent(content) {
+  if (!Array.isArray(content)) {
+    return [{ text: String(content || "") }];
+  }
+  const parts = [];
+  let text = "";
+  const flushText = () => {
+    if (text) {
+      parts.push({ text });
+      text = "";
+    }
+  };
+  for (const part of content) {
+    if (!part) continue;
+    if (typeof part.text === "string") {
+      text += part.text;
+      continue;
+    }
+    if (part.type === "image_url" || part.type === "input_image") {
+      const image = parseImageUrl(part.image_url);
+      if (!image) continue;
+      flushText();
+      if (image.kind === "base64") {
+        parts.push({ inlineData: { mimeType: image.mediaType, data: image.data } });
+      } else {
+        parts.push({ fileData: { mimeType: image.mediaType, fileUri: image.url } });
+      }
+    }
+  }
+  flushText();
+  if (parts.length === 0) parts.push({ text: "" });
+  return parts;
 }
 
 function openAICompletionChunk({
@@ -161,11 +198,11 @@ export const geminiProvider = {
     const contents = [];
     for (const message of requestBody.messages || []) {
       if (message.role === "system") {
-        systemInstruction = { parts: [{ text: String(message.content || "") }] };
+        systemInstruction = { parts: [{ text: textFromMessageContent(message.content) }] };
       } else {
         contents.push({
           role: message.role === "assistant" ? "model" : "user",
-          parts: [{ text: String(message.content || "") }],
+          parts: partsFromMessageContent(message.content),
         });
       }
     }
